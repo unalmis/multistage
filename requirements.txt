@@ -1,0 +1,11 @@
+# Also need to top pin the Python version to 'python < 3.14'.
+equinox >= 0.13.1
+lineax
+interpax_fft
+jax >= 0.5.0, != 0.5.1, != 0.5.2, != 0.6.0, != 0.7.1, <= 0.8.1
+matplotlib
+numpy
+optax
+optimistix
+orbax-checkpoint
+paramax

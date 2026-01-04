@@ -1,0 +1,293 @@
+WARNING:2026-01-03 21:35:00,671:jax._src.xla_bridge:794: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+WARNING:jax._src.xla_bridge:An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+
+--------------------- Run 1 ---------------------
+
+Number of parameters: 1981
+Number of points:     10000
+
+
+=== Resuming training from step 19999 ===
+--- Values at step 19999 ---
+    Stage 1 params: ParamContainer({'lambda_1': [0.], 'log_lambda_2': [-1.83787707]})
+--- Starting training ---
+Step 19999, Loss: 2.074238e-07, Last 100 mean loss: 3.939623407682752e-07.
+    Stage 1 params: ParamContainer({'lambda_1': [0.], 'log_lambda_2': [-1.83787707]})
+------- Stage 0, step 19999 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.443165e-04
+Abs mean error    = 1.422228e-04
+L2 relative error = 6.248383e-04
+
+--- Finished training ---
+
+Training time: 5.28
+------- Stage 0 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.443165e-04
+Abs mean error    = 1.422228e-04
+L2 relative error = 6.248383e-04
+
+Stage 0 statistics:
+RMS residual estimate used for stage 1 is 0.0005849179703223783.
+RMS prediction residual used for stage 1 is 1.1698359406447568e-06.
+Estimate frequency kappa used for stage 1 is [ 5. 10.].
+--- Values at step 0 ---
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+--- Starting training ---
+Step 0, Loss: 2.062939e-07, Last 100 mean loss: 2.0629391272232022e-07.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+------- Stage 1, step 0 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.443250e-04
+Abs mean error    = 1.422359e-04
+L2 relative error = 6.248600e-04
+
+Step 100, Loss: 1.230204e-07, Last 100 mean loss: 1.5842862953672756e-07.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 200, Loss: 8.905366e-08, Last 100 mean loss: 1.0287645390997814e-07.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 300, Loss: 7.007155e-08, Last 100 mean loss: 7.804270408128813e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 400, Loss: 5.869261e-08, Last 100 mean loss: 6.390842449471961e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 500, Loss: 5.215686e-08, Last 100 mean loss: 5.5149821849163996e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 600, Loss: 4.751456e-08, Last 100 mean loss: 4.979218165892515e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 700, Loss: 4.330877e-08, Last 100 mean loss: 4.5298327148358226e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 800, Loss: 4.091104e-08, Last 100 mean loss: 4.1969112262257235e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 900, Loss: 3.915434e-08, Last 100 mean loss: 3.998557162355313e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1000, Loss: 1.299162e-07, Last 100 mean loss: 3.9299043822630726e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+------- Stage 1, step 1000 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.317939e-04
+Abs mean error    = 1.341161e-04
+L2 relative error = 5.928117e-04
+
+Step 1100, Loss: 6.592725e-08, Last 100 mean loss: 8.715105629154465e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1200, Loss: 4.971574e-08, Last 100 mean loss: 5.687159244370774e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1300, Loss: 4.359208e-08, Last 100 mean loss: 4.63110950328595e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1400, Loss: 4.018739e-08, Last 100 mean loss: 4.1605556570262245e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1500, Loss: 8.627232e-08, Last 100 mean loss: 3.9449755852407885e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1600, Loss: 4.299522e-08, Last 100 mean loss: 5.587524469943682e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1700, Loss: 3.771709e-08, Last 100 mean loss: 3.9787291023066726e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1800, Loss: 3.555526e-08, Last 100 mean loss: 3.640506782494444e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 1900, Loss: 3.454192e-08, Last 100 mean loss: 3.499335517357487e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2000, Loss: 6.324775e-08, Last 100 mean loss: 3.4357845886537726e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+------- Stage 1, step 2000 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.316709e-04
+Abs mean error    = 1.335386e-04
+L2 relative error = 5.924973e-04
+
+Step 2100, Loss: 3.898332e-08, Last 100 mean loss: 4.6053394405416923e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2200, Loss: 3.572439e-08, Last 100 mean loss: 3.705998976812147e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2300, Loss: 3.460353e-08, Last 100 mean loss: 3.513774657292084e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2400, Loss: 3.379052e-08, Last 100 mean loss: 3.4209119430908696e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2500, Loss: 6.127793e-08, Last 100 mean loss: 3.373943847456378e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2600, Loss: 3.514241e-08, Last 100 mean loss: 4.165859079457686e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2700, Loss: 3.333045e-08, Last 100 mean loss: 3.403514387164467e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2800, Loss: 3.251651e-08, Last 100 mean loss: 3.2843848208204455e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 2900, Loss: 3.209467e-08, Last 100 mean loss: 3.2278627190404494e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3000, Loss: 5.053729e-08, Last 100 mean loss: 3.2095435075432586e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+------- Stage 1, step 3000 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.305425e-04
+Abs mean error    = 1.322811e-04
+L2 relative error = 5.896115e-04
+
+Step 3100, Loss: 3.504194e-08, Last 100 mean loss: 3.9417075222883296e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3200, Loss: 3.336131e-08, Last 100 mean loss: 3.4070096166181046e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3300, Loss: 3.265248e-08, Last 100 mean loss: 3.295537153210037e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3400, Loss: 3.226407e-08, Last 100 mean loss: 3.242058170648324e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3500, Loss: 5.034747e-08, Last 100 mean loss: 3.228039122745655e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3600, Loss: 3.311265e-08, Last 100 mean loss: 3.580920573050602e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3700, Loss: 3.219068e-08, Last 100 mean loss: 3.2548912337513196e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3800, Loss: 3.164028e-08, Last 100 mean loss: 3.191053873705416e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 3900, Loss: 3.134475e-08, Last 100 mean loss: 3.147306098643426e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4000, Loss: 4.693083e-08, Last 100 mean loss: 3.1339775528997664e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+------- Stage 1, step 4000 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.294201e-04
+Abs mean error    = 1.314672e-04
+L2 relative error = 5.867408e-04
+
+Step 4100, Loss: 3.320585e-08, Last 100 mean loss: 3.6425754450880084e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4200, Loss: 3.177790e-08, Last 100 mean loss: 3.233490105033235e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4300, Loss: 3.124654e-08, Last 100 mean loss: 3.1456729619918775e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4400, Loss: 3.095340e-08, Last 100 mean loss: 3.1090188573589605e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4500, Loss: 4.238278e-08, Last 100 mean loss: 3.097553842984811e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4600, Loss: 3.162256e-08, Last 100 mean loss: 3.43546003139215e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4700, Loss: 3.074244e-08, Last 100 mean loss: 3.1068204745875306e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4800, Loss: 3.042628e-08, Last 100 mean loss: 3.0578552382824456e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 4900, Loss: 3.024355e-08, Last 100 mean loss: 3.033202209333849e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5000, Loss: 4.240813e-08, Last 100 mean loss: 3.029976796666091e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Saving checkpoint to checkpoints/burgers/lbfgs/10k_pts_20k_stps_3_width_30_layers_stage_1...
+------- Stage 1, step 5000 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.283360e-04
+Abs mean error    = 1.304770e-04
+L2 relative error = 5.839682e-04
+
+Step 5100, Loss: 3.206059e-08, Last 100 mean loss: 3.5162169133107884e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5200, Loss: 3.086365e-08, Last 100 mean loss: 3.133429353876522e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5300, Loss: 3.046893e-08, Last 100 mean loss: 3.064375629608391e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5400, Loss: 3.029253e-08, Last 100 mean loss: 3.0372816963312874e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5500, Loss: 3.972049e-08, Last 100 mean loss: 3.031811774906165e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5600, Loss: 3.116373e-08, Last 100 mean loss: 3.2951654300308145e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5700, Loss: 3.045200e-08, Last 100 mean loss: 3.0722397385933343e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5800, Loss: 3.010208e-08, Last 100 mean loss: 3.025850500969233e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 5900, Loss: 2.992906e-08, Last 100 mean loss: 3.000339458372221e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6000, Loss: 4.032999e-08, Last 100 mean loss: 2.9967599608061476e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+------- Stage 1, step 6000 --------
+Final params: lambda_1=0.00000000,
+              lambda_2=0.15915494
+True params:  lambda_1=0.00000000,
+              lambda_2=0.15915494
+lambda_1 error = 0.00000000e+00
+lambda_2 error = 2.77555756e-17
+
+------------ Solution error --------------
+RMS error         = 2.279522e-04
+Abs mean error    = 1.301805e-04
+L2 relative error = 5.829866e-04
+
+Step 6100, Loss: 3.130307e-08, Last 100 mean loss: 3.380782207986617e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6200, Loss: 3.036572e-08, Last 100 mean loss: 3.072454425879901e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6300, Loss: 3.011622e-08, Last 100 mean loss: 3.0211464967915707e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6400, Loss: 2.997529e-08, Last 100 mean loss: 3.0041214468109985e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6500, Loss: 3.839396e-08, Last 100 mean loss: 3.000865718898035e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6600, Loss: 3.108058e-08, Last 100 mean loss: 3.268983776142778e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6700, Loss: 3.036444e-08, Last 100 mean loss: 3.064906724404657e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6800, Loss: 3.004687e-08, Last 100 mean loss: 3.0186578382191015e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 6900, Loss: 2.992633e-08, Last 100 mean loss: 2.9982415272181405e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 7100, Loss: 3.050270e-08, Last 100 mean loss: 3.213961250493703e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 7200, Loss: 3.017448e-08, Last 100 mean loss: 3.0305365074838093e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 7300, Loss: 3.000612e-08, Last 100 mean loss: 3.007990321615877e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 7400, Loss: 2.991248e-08, Last 100 mean loss: 2.995881936777465e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})
+Step 7500, Loss: 3.955415e-08, Last 100 mean loss: 2.996404236896466e-08.
+    Current params: ParamContainer({'lambda_1': None, 'log_lambda_2': None})

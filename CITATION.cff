@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+title: multistage
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Kaya
+    family-names: Unalmis
+    email: kunalmis@stanford.edu
+    affiliation: Stanford University
+    orcid: 'https://orcid.org/0000-0002-1755-6764'
+identifiers:
+  - type: url
+    value: 'https://github.com/unalmis/multistage'
+    description: 'Github repository for multistage'
+repository-code: 'https://github.com/unalmis/multistage'
+url: 'https://unalmis.github.io/multistage/'
+repository-artifact: 'https://pypi.org/project/multistage/'
+license: MIT
