@@ -457,15 +457,22 @@ def _train(  # noqa: C901
         manager = checkpoint_manager(checkpoint_path)
 
         if manager.latest_step() is not None:
-            # then resume from saved state
             start_step = manager.latest_step()
             print(f"\n=== Resuming training from step {start_step} ===")
-            sr_args = {"trainable": trainable, "opt_state": opt_state}
+            restored = {"trainable": trainable, "opt_state": opt_state}
             if return_loss_history:
-                sr_args["loss_history"] = jnp.zeros(start_step + 1)
-            restored = manager.restore(
-                start_step, args=ocp.args.StandardRestore(sr_args)
-            )
+                restored["loss_history"] = jnp.zeros(start_step + 1)
+
+            try:
+                restored = manager.restore(
+                    start_step, args=ocp.args.StandardRestore(restored)
+                )
+            except ValueError:
+                restored["loss_history"] = jnp.zeros(start_step + 2)
+                restored = manager.restore(
+                    start_step, args=ocp.args.StandardRestore(restored)
+                )
+
             trainable = restored["trainable"]
             opt_state = restored["opt_state"]
             net = eqx.combine(trainable, frozen, static)
@@ -474,6 +481,8 @@ def _train(  # noqa: C901
                 loss_history = np.array(restored["loss_history"])
                 last_k_loss = _fill_lask_k_buffer(last_k_loss, loss_history)
                 loss_history = list(loss_history)
+
+            start_step += 1
 
     if debug:
         print("\n-----   Static  -----")
@@ -526,11 +535,10 @@ def _train(  # noqa: C901
             and (step % adaptive_sample_freq == 0)
             and (step >= 999)
         ):
+            print(f"Resampled at step {step}.")
             x_col, key = adaptive_sampler(
                 eqx.combine(trainable, frozen, static), key=key
             )
-            if debug:
-                print(f"[Adaptive] Resampled {len(x_col[0])} points at step {step}")
 
         trainable, opt_state, loss_value = make_step(
             trainable, frozen, static, opt_state, *x, training_samples, *x_col
@@ -557,10 +565,10 @@ def _train(  # noqa: C901
             and (step > start_step)
             and _is_multiple_or_last(step, checkpoint_every, steps)
         ):
-            sr_args = {"trainable": trainable, "opt_state": opt_state}
+            man_args = {"trainable": trainable, "opt_state": opt_state}
             if len(loss_history):
-                sr_args["loss_history"] = jnp.asarray(loss_history)
-            manager.save(step, args=ocp.args.StandardSave(sr_args))
+                man_args["loss_history"] = jnp.asarray(loss_history)
+            manager.save(step, args=ocp.args.StandardSave(man_args))
 
         if callback and _is_multiple_or_last(step, callback_every, steps):
             current_net = eqx.combine(trainable, frozen, static)
@@ -663,6 +671,7 @@ def _trust_region_train(  # noqa: C901
             )
             trainable = restored["trainable"]
             net = eqx.combine(trainable, frozen, static)
+            start_step += 1
 
     def loss(trainable, args):
         frozen, static, *rest = args
@@ -681,9 +690,13 @@ def _trust_region_train(  # noqa: C901
     for step in range(start_step, steps, step_per_opt):
         if (
             (adaptive_sampler is not None)
-            and (step % adaptive_sample_freq == 0)
-            and (step >= 999)
+            and (step == start_step)
+            and (
+                step // adaptive_sample_freq
+                > (step - step_per_opt) // adaptive_sample_freq
+            )
         ):
+            print(f"Resampled at step {step}.")
             x_col, key = adaptive_sampler(
                 eqx.combine(trainable, frozen, static), key=key
             )
@@ -704,17 +717,20 @@ def _trust_region_train(  # noqa: C901
         net = eqx.combine(trainable, frozen, static)
         net.print_params()
 
-        if (
-            manager
-            and (step > start_step)
-            and _is_multiple_or_last(step, checkpoint_every, steps)
+        current_step = step + step_per_opt
+        if manager and (
+            (current_step // checkpoint_every > step // checkpoint_every)
+            or (current_step == steps)
         ):
             manager.save(
-                step,
+                current_step,
                 args=ocp.args.StandardSave({"trainable": trainable}),
             )
 
-        if callback and _is_multiple_or_last(step, callback_every, steps):
+        if callback and (
+            (current_step // callback_every > step // callback_every)
+            or (current_step == steps)
+        ):
             current_net = eqx.combine(trainable, frozen, static)
             callback(current_net, step)
 
@@ -723,10 +739,6 @@ def _trust_region_train(  # noqa: C901
     print(f"Training time: {end_train_time - start_train_time:.2f}")
 
     if manager:
-        manager.save(
-            step,
-            args=ocp.args.StandardSave({"trainable": trainable}),
-        )
         manager.wait_until_finished()
 
     net = eqx.combine(trainable, frozen, static)

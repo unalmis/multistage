@@ -214,7 +214,6 @@ def total_lambdas(model):
         lam_1 = lam_1[0]
     if hasattr(lam_2, "size"):
         lam_2 = lam_2[0]
-    # jax.debug.print("lam_1={l1}, lam_2={l2}", l1=lam_1, l2=lam_2) # noqa: E800
     return lam_1, lam_2
 
 
