@@ -35,7 +35,7 @@ For full details of various options see the `API documentation <https://unalmis.
 
 
 .. |License| image:: https://img.shields.io/github/license/unalmis/multistage?color=blue&logo=open-source-initiative&logoColor=white
-    :target: https://github.com/unalmis/multistage/blob/master/LICENSE
+    :target: https://github.com/unalmis/multistage/blob/main/LICENSE
     :alt: License
 
 .. |Docs| image:: https://github.com/unalmis/multistage/actions/workflows/docs.yml/badge.svg
