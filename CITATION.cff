@@ -17,4 +17,4 @@ identifiers:
 repository-code: 'https://github.com/unalmis/multistage'
 url: 'https://unalmis.github.io/multistage/'
 repository-artifact: 'https://pypi.org/project/multistage/'
-license: MIT
+license: GPL-3.0-or-later
