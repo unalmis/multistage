@@ -1,0 +1,6 @@
+﻿multistage.multistage\_train
+============================
+
+.. currentmodule:: multistage
+
+.. autofunction:: multistage_train

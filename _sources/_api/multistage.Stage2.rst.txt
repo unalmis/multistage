@@ -1,0 +1,39 @@
+﻿multistage.Stage2
+=================
+
+.. currentmodule:: multistage
+
+.. autoclass:: Stage2
+
+   
+   .. automethod:: __init__
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+   
+      ~Stage2.__init__
+      ~Stage2.compute_s2
+      ~Stage2.get_param
+      ~Stage2.print_frozen_params
+      ~Stage2.print_params
+   
+   
+
+   
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~Stage2.epsilon
+      ~Stage2.in_size
+      ~Stage2.kappa
+      ~Stage2.lb
+      ~Stage2.out_size
+      ~Stage2.params
+      ~Stage2.s1
+      ~Stage2.ub
+   
+   
