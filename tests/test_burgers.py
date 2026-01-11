@@ -4,13 +4,13 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt  # noqa: E402
-import optax  # noqa: E402
-from jax import grad, vmap  # noqa: E402
-from optax import squared_error  # noqa: E402
+import matplotlib.pyplot as plt
+import optax
+from jax import config, grad, vmap
+from optax import squared_error
+from orthax.hermite import hermgauss
 
-from multistage import plot_2d_solution  # noqa: F401
-from multistage import (  # noqa: E402
+from multistage import (
     Stage1,
     Stage2,
     multistage_train,
@@ -18,29 +18,19 @@ from multistage import (  # noqa: E402
     plot_2d_residual,
     plot_loss,
 )
-from multistage._utils import (  # noqa: E402
+from multistage._utils import (
     count_params,
+    generate_concentrated_data,
     generate_data,
     print_errors,
     train_test_split,
 )
 
+config.update("jax_enable_x64", True)
+
 # Domain bounds [t, x]
 lb = jnp.array([0.0, -1.0])
 ub = jnp.array([1.0, 1.0])
-
-# For lambda_1 = 0, a true solution is
-# u_true(t, x) = sin(pi*x) * exp(- lambda_2 * pi^2 * t)
-# u_t = lambda_2 * u_xx  # noqa: E800
-# PDE: u_t + lambda_1*u*u_x - lambda_2*u_xx = 0  # noqa: E800
-LAMBDA_1_TRUE = 0.0
-LAMBDA_2_TRUE = 0.5 / jnp.pi
-
-
-@vmap
-def u_true(t, x):
-    """Assumes lambda_1 = 0."""
-    return jnp.sin(jnp.pi * x) * jnp.exp(-LAMBDA_2_TRUE * jnp.pi**2 * t)
 
 
 u_fn_s1 = Stage1.__call__
@@ -164,6 +154,13 @@ u_x_s2 = grad(u_fn_s2, argnums=2)
 u_xx_s2 = grad(grad(u_fn_s2, argnums=2), argnums=2)
 
 
+@partial(grad, argnums=2)
+def _u_prod_x(model, t, x):
+    # valid for stage 2; trivial to add other combinations for stage 2,
+    # but those are of order epsilon^2 anyway.
+    return model.s1(t, x) * model.compute_s2(t, x)
+
+
 @partial(vmap, in_axes=(None, 0, 0))
 def residual_s2_burgers(model, t, x):
     """Calculates the PDE residual for the Stage 2 model.
@@ -189,6 +186,7 @@ def residual_s2_burgers(model, t, x):
     uxx = u_xx_s2(model, t, x)
     lam_1, lam_2 = total_lambdas(model)
     f = ut + lam_1 * u * ux - lam_2 * uxx
+    f = f + model.epsilon * lam_1 * _u_prod_x(model, t, x)
     return u, f
 
 
@@ -295,7 +293,9 @@ def loss_s2_burgers_unreduced(
     return jnp.concatenate((loss_data, loss_resid))
 
 
-def benchmark_state(net, stage, name, x_test, u_data_test, step=None):
+def benchmark_state(
+    net, stage, name, x_test, u_data_test, LAMBDA_1, LAMBDA_2, step=None
+):
     lam_1, lam_2 = total_lambdas(net)
     if step is None:
         print(f"------- Stage {stage} --------")
@@ -303,10 +303,10 @@ def benchmark_state(net, stage, name, x_test, u_data_test, step=None):
         print(f"------- Stage {stage}, step {step} --------")
     print(f"Final params: lambda_1={lam_1:.8f}, ")
     print(f"              lambda_2={lam_2:.8f}")
-    print(f"True params:  lambda_1={LAMBDA_1_TRUE:.8f}, ")
-    print(f"              lambda_2={LAMBDA_2_TRUE:.8f}")
-    print(f"lambda_1 error = {jnp.abs(LAMBDA_1_TRUE - lam_1):.8e}")
-    print(f"lambda_2 error = {jnp.abs(LAMBDA_2_TRUE - lam_2):.8e}\n")
+    print(f"True params:  lambda_1={LAMBDA_1:.8f}, ")
+    print(f"              lambda_2={LAMBDA_2:.8f}")
+    print(f"lambda_1 error = {jnp.abs(LAMBDA_1 - lam_1):.8e}")
+    print(f"lambda_2 error = {jnp.abs(LAMBDA_2 - lam_2):.8e}\n")
 
     print_errors(net, x_test, u_data_test, check_dim=1)
 
@@ -329,6 +329,9 @@ def benchmark_state(net, stage, name, x_test, u_data_test, step=None):
 
 
 def run_burgers(
+    u_true,
+    LAMBDA_1,
+    LAMBDA_2,
     num_points=20000,
     split_ratio=0.5,
     estimate_params=False,
@@ -340,6 +343,7 @@ def run_burgers(
     adaptive_sample_freq=1000,
     chebyshev=False,
     name="burgers/lbfgs/10k_pts_20k_stps_3layers",
+    normal_sample=False,
     **net_kwargs,
 ):
     """Test Burgers inverse problem optimization.
@@ -373,6 +377,8 @@ def run_burgers(
         Whether to use Chebyshev feature mapping instead of Fourier.
     name : str
         Name for the run, used for saving files and benchmarks.
+    normal_sample : bool
+        Whether to sample additional points from normal distribution around x = 0.
     net_kwargs : dict
         Network hyperparameters for initial Stage1 network.
 
@@ -388,11 +394,44 @@ def run_burgers(
 
     # stage 1 training data
     x, u_data, key = generate_data(num_points, lb, ub, in_size, u_true)
+    if normal_sample:
+        x_conc, u_data_conc, key = generate_concentrated_data(
+            num_points // 5,
+            lb,
+            ub,
+            in_size,
+            u_true,
+            axis=1,
+            center=0.0,
+            scale=LAMBDA_1,
+            key=key,
+        )
+        x = jnp.concatenate([jnp.stack(x), x_conc], axis=1)
+        u_data = jnp.concatenate([u_data, u_data_conc])
+
     # stage 2 training data (if we use same data for stage 2,
     # then we don't gain anything since network already has low loss there)
     x_train_stage2, u_data_train_stage2, key = generate_data(
         num_points // 2, lb, ub, in_size, u_true, key=key
     )
+    if normal_sample:
+        x_train_conc_stage2, u_data_conc_train_stage2, key = generate_concentrated_data(
+            num_points // 5,
+            lb,
+            ub,
+            in_size,
+            u_true,
+            axis=1,
+            center=0.0,
+            scale=LAMBDA_1,
+            key=key,
+        )
+        x_train_stage2 = jnp.concatenate(
+            [jnp.stack(x_train_stage2), x_train_conc_stage2], axis=1
+        )
+        u_data_train_stage2 = jnp.concatenate(
+            [u_data_train_stage2, u_data_conc_train_stage2]
+        )
 
     split_key, model_key = jax.random.split(key)
     x_train, u_data_train, x_test, u_data_test = train_test_split(
@@ -407,8 +446,8 @@ def run_burgers(
         }
     else:
         params = {
-            "lambda_1": jnp.array([LAMBDA_1_TRUE]),
-            "log_lambda_2": jnp.log(jnp.array([LAMBDA_2_TRUE])),
+            "lambda_1": jnp.array([LAMBDA_1]),
+            "log_lambda_2": jnp.log(jnp.array([LAMBDA_2])),
         }
     net = Stage1(**net_kwargs, params=params, key=key)
     num_params = count_params(net)
@@ -418,6 +457,11 @@ def run_burgers(
         u_data_train.shape[0] / 2
     )
 
+    adaptive_sample_kwargs = {
+        "center": 0.0,
+        "scale": LAMBDA_1,
+        "normal_sample": (False, normal_sample),
+    }
     if optimizer == "trust region":
         net = multistage_trust_region_train(
             net,
@@ -441,8 +485,13 @@ def run_burgers(
             net_kwargs_for_save=net_kwargs,
             name=name,
             benchmark_state=partial(
-                benchmark_state, x_test=x_test, u_data_test=u_data_test
+                benchmark_state,
+                x_test=x_test,
+                u_data_test=u_data_test,
+                LAMBDA_1=LAMBDA_1,
+                LAMBDA_2=LAMBDA_2,
             ),
+            **adaptive_sample_kwargs,
         )
     else:
         net, loss_history = multistage_train(
@@ -465,21 +514,82 @@ def run_burgers(
             net_kwargs_for_save=net_kwargs,
             name=name,
             benchmark_state=partial(
-                benchmark_state, x_test=x_test, u_data_test=u_data_test
+                benchmark_state,
+                x_test=x_test,
+                u_data_test=u_data_test,
+                LAMBDA_1=LAMBDA_1,
+                LAMBDA_2=LAMBDA_2,
             ),
+            **adaptive_sample_kwargs,
         )
 
     return net
 
 
-def main(estimate_params=True, chebyshev=False):
-    name_start = "estimate/" if estimate_params else ""
+def main(estimate_params=True, chebyshev=False, nonlinear=False):
+    if nonlinear:
+
+        LAMBDA_1 = 1.0
+        LAMBDA_2 = 1e-2 / jnp.pi
+        _xi, _w = hermgauss(100)
+
+        def u_true(t, x, nu=LAMBDA_2, deg=100):
+            """Burger's equation solution using Cole-Hopf transformation.
+
+            The coefficient of the nonlinear term is assumed to be 1.
+
+            Parameters
+            ----------
+            x : jax.Array
+                The spatial coordinates |x|<=1 at which to evaluate the solution.
+            t : jax.Array
+                The time 0 <= t <= 1 at which to evaluate the solution.
+            nu : float
+                The viscosity coefficient.
+            deg : int
+                Number of quadrature points for the Gauss-Hermite integration.
+
+            Returns
+            -------
+            u : jax.Array
+                u(x, t).
+
+            """
+            t, x = jnp.atleast_1d(t, x)
+            assert t.ndim == x.ndim == 1
+            t = t[:, None]
+            x = x[:, None]
+
+            xi, w = (_xi, _w) if (deg == 100) else hermgauss(deg)
+            eta = jnp.sqrt(4 * nu * t) * xi
+            y = jnp.pi * (x - eta)
+            f = jnp.exp(-jnp.cos(y) / (2 * jnp.pi * nu))
+            return jnp.squeeze(-jnp.dot(jnp.sin(y) * f, w) / jnp.dot(f, w))
+
+    else:
+        # For lambda_1 = 0, a true solution is
+        # u_true(t, x) = sin(pi*x) * exp(- lambda_2 * pi^2 * t)
+        # u_t = lambda_2 * u_xx  # noqa: E800
+        # PDE: u_t + lambda_1*u*u_x - lambda_2*u_xx = 0  # noqa: E800
+        LAMBDA_1 = 0.0
+        LAMBDA_2 = 0.5 / jnp.pi
+
+        @vmap
+        def u_true(t, x):
+            """Assumes lambda_1 = 0."""
+            return jnp.sin(jnp.pi * x) * jnp.exp(-LAMBDA_2 * jnp.pi**2 * t)
+
+    name_start = "nonlinear/" if nonlinear else ""
+    name_start += "estimate/" if estimate_params else ""
     name_start += "chebyshev/" if chebyshev else "fourier/"
 
     print()
     print("--------------------- Run 1 ---------------------")
     name = "burgers/lbfgs/" + name_start + "10k_pts_20k_stps_3_width_30_layers"
     run_burgers(
+        u_true,
+        LAMBDA_1,
+        LAMBDA_2,
         num_points=20000,
         split_ratio=0.5,
         estimate_params=estimate_params,
@@ -489,6 +599,7 @@ def main(estimate_params=True, chebyshev=False):
         adaptive_sample_freq=500,
         chebyshev=chebyshev,
         name=name,
+        normal_sample=nonlinear,
         width_size=30,
     )
     plot_loss(
@@ -500,6 +611,9 @@ def main(estimate_params=True, chebyshev=False):
     print("--------------------- Run 2 ---------------------")
     name = "burgers/lbfgs/" + name_start + "15k_pts_20k_stps_4layers"
     run_burgers(
+        u_true,
+        LAMBDA_1,
+        LAMBDA_2,
         num_points=30000,
         split_ratio=0.5,
         estimate_params=estimate_params,
@@ -508,6 +622,7 @@ def main(estimate_params=True, chebyshev=False):
         steps=20000,
         chebyshev=chebyshev,
         name=name,
+        normal_sample=nonlinear,
         depth=4,
     )
     plot_loss(
@@ -519,6 +634,9 @@ def main(estimate_params=True, chebyshev=False):
     print("--------------------- Run 3 ---------------------")
     name = "burgers/trust_region/" + name_start + "5k_pts_100_stps_3_width_30_layers"
     run_burgers(
+        u_true,
+        LAMBDA_1,
+        LAMBDA_2,
         num_points=10000,
         split_ratio=0.5,
         estimate_params=estimate_params,
@@ -526,9 +644,10 @@ def main(estimate_params=True, chebyshev=False):
         optimizer="trust region",
         steps=100,
         lbfgs_steps=2000,
-        adaptive_sample_freq=10,
+        adaptive_sample_freq=20,
         chebyshev=chebyshev,
         name=name,
+        normal_sample=nonlinear,
         depth=2,
         width_size=30,
     )
@@ -540,7 +659,9 @@ if __name__ == "__main__":
     matplotlib.use("Agg")
 
     # python -u tests/test_burgers.py > tests/log/test_burgers.log 2>&1
-    main(estimate_params=False)
-    main(estimate_params=True)
+    main(estimate_params=False, nonlinear=False)
+    main(estimate_params=True, nonlinear=False)
+    main(estimate_params=False, nonlinear=True)
+    main(estimate_params=True, nonlinear=True)
     # main(estimate_params=False, chebyshev=True)  # noqa: E800
     # main(estimate_params=True, chebyshev=True)  # noqa: E800

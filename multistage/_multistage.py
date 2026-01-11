@@ -162,7 +162,7 @@ class Stage1(eqx.Module):
         x = rescale(jnp.stack(args), self.lb, self.ub)
         x = self._mlp(x)
         if self.out_size == 1:
-            x = x[0]
+            x = x.squeeze(0)
         return x
 
     def get_param(self, key, default=None):
@@ -319,16 +319,20 @@ class Stage2(eqx.Module):
     def __call__(self, *args):
         """Compute the output of this network.
 
+        output = last stage + epsilon * this stage
+
         Parameters
         ----------
         args : tuple[jnp.ndarray]
             Input coordinates, e.g. (x, t) for 2D problem.
 
         """
-        s1 = self.s1
-        u0 = s1(*args)
+        return self.s1(*args) + self.epsilon * self.compute_s2(*args)
 
-        x = rescale(jnp.stack(args), s1.lb, s1.ub)
+    def compute_s2(self, *args):
+        """Compute just this stage of the output."""
+        x = rescale(jnp.stack(args), self.lb, self.ub)
+
         # TODO: Make frequency mapping separable to avoid diagonal waves.
         if self._chebyshev:
             # Ensure x ∈ (-1, 1), i.e. where arccos is differentiable.
@@ -337,12 +341,12 @@ class Stage2(eqx.Module):
             x = jnp.cos(self._first(self.kappa * jnp.arccos(x)))
         else:
             x = jnp.sin(self._first(self.kappa * x))
-        x = self.epsilon * self._mlp(x)
+        x = self._mlp(x)
 
         if self.out_size == 1:
-            x = x[0]
+            x = x.squeeze(0)
 
-        return u0 + x
+        return x
 
     def get_param(self, key, default=None):
         """Return ``self.params["key"]`` if it exists and is not None else default."""
@@ -778,6 +782,7 @@ def multistage_train(
     checkpoint_dir="checkpoints",
     checkpoint_every=5000,
     benchmark_state=None,
+    **adaptive_sample_kwargs,
 ):
     """Multi-stage training.
 
@@ -867,6 +872,9 @@ def multistage_train(
         x_stage2 = x
         training_samples_stage2 = training_samples
 
+    adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
+    adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
+
     residual_fun = residual_fun_s1
     loss_fun = loss_fun_s1
     loss_histories = []
@@ -883,8 +891,7 @@ def multistage_train(
                 adaptive_sample,
                 residual_fun=residual_fun,
                 in_size=net.in_size,
-                n_candidates=len(x[0]) * 10,
-                n_selected=len(x[0]) // 2,
+                **adaptive_sample_kwargs,
             )
         else:
             adaptive_sampler = None
@@ -999,6 +1006,7 @@ def multistage_trust_region_train(
     checkpoint_dir="checkpoints",
     checkpoint_every=100,
     benchmark_state=None,
+    **adaptive_sample_kwargs,
 ):
     """Multi-stage training using trust region based optimization.
 
@@ -1106,6 +1114,9 @@ def multistage_trust_region_train(
         x_stage2 = x
         training_samples_stage2 = training_samples
 
+    adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
+    adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
+
     residual_fun = residual_fun_s1
     loss_fun = loss_fun_s1
     loss_fun_unreduced = loss_fun_s1_unreduced
@@ -1123,8 +1134,7 @@ def multistage_trust_region_train(
                 adaptive_sample,
                 residual_fun=residual_fun,
                 in_size=net.in_size,
-                n_candidates=len(x[0]) * 10,
-                n_selected=len(x[0]) // 2,
+                **adaptive_sample_kwargs,
             )
         else:
             adaptive_sampler = None
