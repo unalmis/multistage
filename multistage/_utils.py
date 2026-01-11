@@ -85,6 +85,32 @@ def generate_data(num_samples, lb, ub, in_size, true_data_fun, noise_level=0, ke
     return x, data, final_key
 
 
+def generate_concentrated_data(
+    num_samples,
+    lb,
+    ub,
+    in_size,
+    true_data_fun,
+    axis,
+    center,
+    scale,
+    key=None,
+):
+    """Generates data focused around a specific value on one axis."""
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    key, k1, k2 = jax.random.split(key, 3)
+
+    x = jax.random.uniform(k1, (num_samples, in_size), minval=lb, maxval=ub).T
+    gauss_vals = jnp.clip(
+        center + scale * jax.random.normal(k2, (num_samples,)), lb[axis], ub[axis]
+    ).T
+    x = x.at[axis].set(gauss_vals)
+    u = true_data_fun(*x)
+    return x, u, key
+
+
 def adaptive_sample(
     net,
     residual_fun,
@@ -95,6 +121,9 @@ def adaptive_sample(
     mode="top_k",
     k=1.0,
     c=0.0,
+    normal_sample=False,
+    center=0.0,
+    scale=0.1,
 ):
     """
     Selects collocation points based on PDE residuals using adaptive strategies.
@@ -127,6 +156,8 @@ def adaptive_sample(
     c : float, optional
         Hyperparameter for 'probabilistic' mode. Controls the flatness of the
         distribution (higher c adds more uniform randomness). Default is 0.0.
+    normal_sample : list[bool]
+        Whether to sample additional points from normal distribution around x = 0.
 
     Returns
     -------
@@ -144,9 +175,24 @@ def adaptive_sample(
     keys = jax.random.split(key, in_size + 2)
     x_candidates = []
     for i in range(in_size):
-        x_candidates.append(
-            jax.random.uniform(keys[i], (n_candidates,), minval=lb[i], maxval=ub[i])
-        )
+        if normal_sample[i]:
+            num_1 = n_candidates // 2
+            num_2 = int(jnp.ceil(n_candidates / 2))
+        else:
+            num_1 = n_candidates
+        x_i = jax.random.uniform(keys[i], (num_1,), minval=lb[i], maxval=ub[i])
+        if normal_sample[i]:
+            x_i = jnp.concatenate(
+                [
+                    x_i,
+                    jnp.clip(
+                        center + scale * jax.random.normal(keys[i], (num_2,)),
+                        lb[i],
+                        ub[i],
+                    ),
+                ]
+            )
+        x_candidates.append(x_i)
 
     _, residuals = residual_fun(net, *x_candidates)
     residuals = jnp.abs(residuals)

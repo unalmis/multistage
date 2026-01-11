@@ -5,7 +5,12 @@ import numpy as np
 import pytest
 from matplotlib import pyplot as plt
 
-from multistage._utils import generate_data, stats, stats_chebyshev
+from multistage._utils import (
+    generate_concentrated_data,
+    generate_data,
+    stats,
+    stats_chebyshev,
+)
 
 
 class _DummyModel(eqx.Module):
@@ -151,6 +156,24 @@ def test_generated_data(lb=jnp.array([0, -1]), ub=jnp.array([1, 1])):
     in_size = 2
     num_points = 2000
     x, u_data, key = generate_data(num_points, lb, ub, in_size, u_true)
+
+    time, space = x
+    plt.figure()
+    sc = plt.scatter(time, space, c=u_data, cmap="viridis", s=2, alpha=0.6)
+    plt.colorbar(sc, label="u(t, x)")
+    plt.xlabel("Dimension 0 (e.g., t)")
+    plt.ylabel("Dimension 1 (e.g., x)")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.show()
+
+
+def test_concentrated_data(lb=jnp.array([0, -1]), ub=jnp.array([1, 1])):
+    """Make sure training data is concentrated."""
+    in_size = 2
+    num_points = 1000
+    x, u_data, key = generate_concentrated_data(
+        num_points, lb, ub, in_size, u_true, 1, center=0.0, scale=0.01
+    )
 
     time, space = x
     plt.figure()
