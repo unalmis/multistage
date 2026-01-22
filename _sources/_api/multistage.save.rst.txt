@@ -1,0 +1,6 @@
+﻿multistage.save
+===============
+
+.. currentmodule:: multistage
+
+.. autofunction:: save

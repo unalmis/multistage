@@ -1,0 +1,193 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>multistage.multistage_trust_region_train &mdash; multistage 0+untagged.1.gb2ffea7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=0745d1ac" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+      <link rel="stylesheet" type="text/css" href="../_static/github_style.css?v=1093691d" />
+      <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=c00a5260" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2d7d7425"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="multistage.plot_2d_residual" href="multistage.plot_2d_residual.html" />
+    <link rel="prev" title="multistage.multistage_train" href="multistage.multistage_train.html" />
+    <link href="../_static/custom.css" rel="stylesheet" type="text/css">
+
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search"  style="background: #3c4142" >
+
+          
+          
+          <a href="../index.html">
+            
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Public API</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">API Documentation</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#multistage-networks">Multistage networks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html#plotting">Plotting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html#io">IO</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu"  style="background: #3c4142" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">multistage</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">API Documentation</a></li>
+      <li class="breadcrumb-item active">multistage.multistage_trust_region_train</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/_api/multistage.multistage_trust_region_train.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul><div class="rst-breadcrumbs-buttons" role="navigation" aria-label="Sequential page navigation">
+        <a href="multistage.multistage_train.html" class="btn btn-neutral float-left" title="multistage.multistage_train" accesskey="p"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="multistage.plot_2d_residual.html" class="btn btn-neutral float-right" title="multistage.plot_2d_residual" accesskey="n">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+  </div>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="multistage-multistage-trust-region-train">
+<h1>multistage.multistage_trust_region_train<a class="headerlink" href="#multistage-multistage-trust-region-train" title="Link to this heading"></a></h1>
+<dl class="py function">
+<dt class="sig sig-object py" id="multistage.multistage_trust_region_train">
+<span class="sig-prename descclassname"><span class="pre">multistage.</span></span><span class="sig-name descname"><span class="pre">multistage_trust_region_train</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">net</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">residual_fun_s1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">residual_fun_s2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">loss_fun_s1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">loss_fun_s2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">loss_fun_s1_unreduced</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">loss_fun_s2_unreduced</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">training_samples</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">steps</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lbfgs_steps</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rtol</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-07</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">atol</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-08</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rtol_decay_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.7</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">atol_decay_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">linear_solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(QR()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">NormalCG(rtol</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-07</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">atol</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-07))</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">learning_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">adaptive_sample_freq</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_stages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">width_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">activation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">&lt;PjitFunction</span> <span class="pre">of</span> <span class="pre">&lt;function</span> <span class="pre">tanh&gt;&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_samples_for_epsilon</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1024</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">order</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">beta_fun</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">heuristic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.9</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chebyshev</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x_stage2</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">training_samples_stage2</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">print_every</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">key</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">net_kwargs_for_save</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">''</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">checkpoint_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'checkpoints'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">checkpoint_every</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">benchmark_state</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**adaptive_sample_kwargs</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/unalmis/multistage/blob/b2ffea7c63534f9940c339bd3087853bc78a2218/multistage/_multistage.py#L970-L1231"><span class="linkcode-link"><span class="pre">Source</span></span></a><a class="headerlink" href="#multistage.multistage_trust_region_train" title="Link to this definition"></a></dt>
+<dd><p>Multi-stage training using trust region based optimization.</p>
+<p class="rubric">Examples</p>
+<ul class="simple">
+<li><p>See <code class="docutils literal notranslate"><span class="pre">tests/test_burgers.py</span></code>.</p></li>
+</ul>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>net</strong> (<em>eqx.Module</em>) – The initial model architecture.</p></li>
+<li><p><strong>residual_fun_s1</strong> (<em>callable</em>) – Function to compute PDE residuals for the first stage.</p></li>
+<li><p><strong>residual_fun_s2</strong> (<em>callable</em>) – Function to compute PDE residuals for subsequent stages.</p></li>
+<li><p><strong>loss_fun_s1</strong> (<em>callable</em>) – Scalar output loss function for the first stage.</p></li>
+<li><p><strong>loss_fun_s2</strong> (<em>callable</em>) – Scalar output loss function for subsequent stages.</p></li>
+<li><p><strong>loss_fun_s1_unreduced</strong> (<em>callable</em>) – Unreduced loss function for the first stage.</p></li>
+<li><p><strong>loss_fun_s2_unreduced</strong> (<em>callable</em>) – Unreduced loss function for subsequent stages.</p></li>
+<li><p><strong>x</strong> (<em>tuple</em><em> or </em><em>list</em><em> of </em><em>jax.Array</em>) – Input coordinates passed to the residual function for the first stage.</p></li>
+<li><p><strong>training_samples</strong> (<em>jax.Array</em>) – Target values for the first stage.</p></li>
+<li><p><strong>steps</strong> (<em>int</em>) – Maximum number of solver steps per stage.</p></li>
+<li><p><strong>lbfgs_steps</strong> (<em>int</em>) – Number of steps to use LBFGS prior to trust region approach.
+Default is 1000.</p></li>
+<li><p><strong>rtol</strong> (<em>float</em>) – Relative tolerance for the Levenberg-Marquardt solver for the first stage.</p></li>
+<li><p><strong>atol</strong> (<em>float</em>) – Absolute tolerance for the Levenberg-Marquardt solver for the first stage.</p></li>
+<li><p><strong>rtol_decay_factor</strong> (<em>float</em>) – Decay factor for <code class="docutils literal notranslate"><span class="pre">rtol</span></code> in subsequent stages.
+Default of <code class="docutils literal notranslate"><span class="pre">0.7</span></code> means the next stage will have <code class="docutils literal notranslate"><span class="pre">new_rtol=rtol*0.7</span></code>.</p></li>
+<li><p><strong>atol_decay_factor</strong> (<em>float</em>) – Decay factor for <code class="docutils literal notranslate"><span class="pre">atol</span></code> in subsequent stages.
+Default of <code class="docutils literal notranslate"><span class="pre">0.1</span></code> means the next stage will have <code class="docutils literal notranslate"><span class="pre">new_atol=atol*0.1</span></code>.</p></li>
+<li><p><strong>linear_solver</strong> (<em>tuple</em><em>[</em><em>lineax.AbstractLinearSolver</em><em>]</em>) – The linear solver used to compute the Gauss-Newton step.
+Default is QR for first stage and conjugate gradient on the normal
+equations for following stages.</p></li>
+<li><p><strong>learning_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – The initial damping parameter (step size) for the Levenberg-Marquardt
+algorithm.</p></li>
+<li><p><strong>adaptive_sample_freq</strong> (<em>int</em><em>, </em><em>optional</em>) – Frequency of adaptive sampling during training with trust region method.
+Default is 100. LBFGS warmup steps will adaptive sample with
+10 times less frequency.</p></li>
+<li><p><strong>n_stages</strong> (<em>int</em><em>, </em><em>optional</em>) – Total number of training stages. Default is 2.</p></li>
+<li><p><strong>width_size</strong> (<em>int</em><em>, </em><em>optional</em>) – Width of the sub-networks added in later stages.</p></li>
+<li><p><strong>depth</strong> (<em>int</em><em>, </em><em>optional</em>) – Depth of the sub-networks added in later stages.</p></li>
+<li><p><strong>activation</strong> (<em>callable</em><em>, </em><em>optional</em>) – Activation function for new stages. Default is <code class="docutils literal notranslate"><span class="pre">jnp.tanh</span></code>.</p></li>
+<li><p><strong>num_samples_for_epsilon</strong> (<em>tuple</em><em>, </em><em>optional</em>) – Number of samples used to estimate error statistics between stages.</p></li>
+<li><p><strong>order</strong> (<em>tuple</em><em>, </em><em>optional</em>) – Order of error estimation.</p></li>
+<li><p><strong>beta_fun</strong> (<em>callable</em><em>, </em><em>optional</em>) – Function defining the beta distribution for error bounds.</p></li>
+<li><p><strong>heuristic</strong> (<em>float</em><em>, </em><em>optional</em>) – Heuristic multiplier for error estimation. Default is 0.9.</p></li>
+<li><p><strong>chebyshev</strong> (<em>bool</em>) – Whether to use Chebyshev feature mapping instead of Fourier.
+If given, <code class="docutils literal notranslate"><span class="pre">heuristic</span></code> is ignored.</p></li>
+<li><p><strong>x_stage2</strong> (<em>tuple</em><em> of </em><em>jax.Array</em><em>, </em><em>optional</em>) – Input coordinates for stage 2 and beyond. Default is <code class="docutils literal notranslate"><span class="pre">x</span></code>.</p></li>
+<li><p><strong>training_samples_stage2</strong> (<em>jax.Array</em><em>, </em><em>optional</em>) – Training data for stage 2 and beyond. Default is <code class="docutils literal notranslate"><span class="pre">training_samples</span></code>.</p></li>
+<li><p><strong>print_every</strong> (<em>int</em><em>, </em><em>optional</em>) – Logging frequency.</p></li>
+<li><p><strong>key</strong> (<em>jax.random.PRNGKey</em><em>, </em><em>optional</em>) – Random key for initialization and sampling.</p></li>
+<li><p><strong>net_kwargs_for_save</strong> (<em>dict</em><em>, </em><em>optional</em>) – Additional metadata to save with the model.</p></li>
+<li><p><strong>name</strong> (<em>str</em><em>, </em><em>optional</em>) – Base name for saving models and checkpoints.</p></li>
+<li><p><strong>checkpoint_dir</strong> (<em>str</em><em>, </em><em>optional</em>) – Directory to store stage-specific checkpoints.</p></li>
+<li><p><strong>checkpoint_every</strong> (<em>int</em><em>, </em><em>optional</em>) – Frequency of checkpointing within stages. Default is 100.
+LBFGS warmup steps will checkpoint with 10 times less frequency.</p></li>
+<li><p><strong>benchmark_state</strong> (<em>callable</em><em>, </em><em>optional</em>) – Callback for external benchmarking or logging. Signature:
+<code class="docutils literal notranslate"><span class="pre">benchmark_state(net,stage,name,step=step)</span></code>.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><strong>net</strong> (<em>eqx.Module</em>) – The final trained multi-stage model.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="multistage.multistage_train.html" class="btn btn-neutral float-left" title="multistage.multistage_train" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="multistage.plot_2d_residual.html" class="btn btn-neutral float-right" title="multistage.plot_2d_residual" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, Kaya Unalmis.
+      <span class="lastupdated">Last updated on Jan 22, 2026.
+      </span></p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

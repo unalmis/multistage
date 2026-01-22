@@ -1,0 +1,220 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>multistage.Stage2 &mdash; multistage 0+untagged.1.gb2ffea7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=0745d1ac" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+      <link rel="stylesheet" type="text/css" href="../_static/github_style.css?v=1093691d" />
+      <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=c00a5260" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2d7d7425"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="multistage.multistage_train" href="multistage.multistage_train.html" />
+    <link rel="prev" title="multistage.Stage1" href="multistage.Stage1.html" />
+    <link href="../_static/custom.css" rel="stylesheet" type="text/css">
+
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search"  style="background: #3c4142" >
+
+          
+          
+          <a href="../index.html">
+            
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Public API</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">API Documentation</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#multistage-networks">Multistage networks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html#plotting">Plotting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html#io">IO</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu"  style="background: #3c4142" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">multistage</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">API Documentation</a></li>
+      <li class="breadcrumb-item active">multistage.Stage2</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/_api/multistage.Stage2.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul><div class="rst-breadcrumbs-buttons" role="navigation" aria-label="Sequential page navigation">
+        <a href="multistage.Stage1.html" class="btn btn-neutral float-left" title="multistage.Stage1" accesskey="p"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="multistage.multistage_train.html" class="btn btn-neutral float-right" title="multistage.multistage_train" accesskey="n">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+  </div>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="multistage-stage2">
+<h1>multistage.Stage2<a class="headerlink" href="#multistage-stage2" title="Link to this heading"></a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="multistage.Stage2">
+<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">multistage.</span></span><span class="sig-name descname"><span class="pre">Stage2</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">s1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">epsilon</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kappa</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">width_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">activation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">&lt;PjitFunction</span> <span class="pre">of</span> <span class="pre">&lt;function</span> <span class="pre">tanh&gt;&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params_are_trainable</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">key</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chebyshev</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/unalmis/multistage/blob/b2ffea7c63534f9940c339bd3087853bc78a2218/multistage/_multistage.py#L182-L365"><span class="linkcode-link"><span class="pre">Source</span></span></a><a class="headerlink" href="#multistage.Stage2" title="Link to this definition"></a></dt>
+<dd><p>Initializes the Stage 2 PINN model.</p>
+<p class="rubric">Examples</p>
+<ul class="simple">
+<li><p>See <code class="docutils literal notranslate"><span class="pre">tests/test_burgers.py</span></code>.</p></li>
+</ul>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>s1</strong> (<a class="reference internal" href="multistage.Stage1.html#multistage.Stage1" title="multistage.Stage1"><em>Stage1</em></a>) – The frozen model from stage 1.</p></li>
+<li><p><strong>epsilon</strong> (<em>float</em>) – Approximate magnitude of output.</p></li>
+<li><p><strong>kappa</strong> (<em>jax.Array</em>) – Approximate dominant frequency of output in each direction.
+Shape (s1._mlp.in_size, )</p></li>
+<li><p><strong>width_size</strong> (<em>int</em>) – Size of each hidden layer.</p></li>
+<li><p><strong>depth</strong> (<em>int</em>) – The number of hidden layers, including the output layer.</p></li>
+<li><p><strong>activation</strong> (<em>callable</em>) – The activation function for each hidden layer after the first.
+Default is <code class="docutils literal notranslate"><span class="pre">jnp.tanh</span></code>.</p></li>
+<li><p><strong>params</strong> (<em>dict</em><em>[</em><em>str</em><em>, </em><em>jax.Array</em><em>]</em>) – <p>Dictionary of parameters to learn and initial guesses.
+E.g. for Burgers:
+{</p>
+<blockquote>
+<div><p>”lambda_1”: jax.random.normal(l1_key, (1,)) * 0.1,
+“log_lambda_2”: -6.0 + jax.random.normal(l2_key, (1,)) * 0.1,</p>
+</div></blockquote>
+<p>}</p>
+</p></li>
+<li><p><strong>params_are_trainable</strong> (<em>bool</em>) – Whether the <code class="docutils literal notranslate"><span class="pre">params</span></code> values should be frozen or an optimizable quantity.
+Default is False for frozen.</p></li>
+<li><p><strong>key</strong> (<em>float</em>) – Key for reproducibility.</p></li>
+<li><p><strong>chebyshev</strong> (<em>bool</em>) – Whether the frequency <code class="docutils literal notranslate"><span class="pre">kappa</span></code> is associated with a Chebyshev feature
+mapping instead of Fourier. Default is False.</p></li>
+<li><p><strong>kwargs</strong> (<em>dict</em>) – Keyword arguments to <code class="docutils literal notranslate"><span class="pre">equinox.nn.MLP</span></code>.</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="multistage.Stage2.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">s1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">epsilon</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kappa</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">width_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">activation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">&lt;PjitFunction</span> <span class="pre">of</span> <span class="pre">&lt;function</span> <span class="pre">tanh&gt;&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params_are_trainable</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">key</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chebyshev</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/unalmis/multistage/blob/b2ffea7c63534f9940c339bd3087853bc78a2218/multistage/_multistage.py#L233-L275"><span class="linkcode-link"><span class="pre">Source</span></span></a><a class="headerlink" href="#multistage.Stage2.__init__" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<p class="rubric">Methods</p>
+<table class="autosummary longtable docutils align-default">
+<tbody>
+<tr class="row-odd"><td><p><a class="reference internal" href="#multistage.Stage2.__init__" title="multistage.Stage2.__init__"><code class="xref py py-obj docutils literal notranslate"><span class="pre">__init__</span></code></a>(s1, epsilon, kappa[, width_size, ...])</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">compute_s2</span></code>(*args)</p></td>
+<td><p>Compute just this stage of the output.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_param</span></code>(key[, default])</p></td>
+<td><p>Return <code class="docutils literal notranslate"><span class="pre">self.params[&quot;key&quot;]</span></code> if it exists and is not None else default.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">print_frozen_params</span></code>()</p></td>
+<td><p>Print the frozen parameters of this network.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">print_params</span></code>()</p></td>
+<td><p>Print the params of this network.</p></td>
+</tr>
+</tbody>
+</table>
+<p class="rubric">Attributes</p>
+<table class="autosummary longtable docutils align-default">
+<tbody>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">epsilon</span></code></p></td>
+<td><p>Estimated magnitude scale of output for this stage.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">in_size</span></code></p></td>
+<td><p>Number of input dimensions.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">kappa</span></code></p></td>
+<td><p>Estimated dominant frequency of output for this stage.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">lb</span></code></p></td>
+<td><p>Lower bound of input coordinates.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">out_size</span></code></p></td>
+<td><p>Number of output dimensions.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">params</span></code></p></td>
+<td><p>Params for this stage.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">s1</span></code></p></td>
+<td><p>Returns the previous stage network.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">ub</span></code></p></td>
+<td><p>Upper bound of input coordinates.</p></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="multistage.Stage1.html" class="btn btn-neutral float-left" title="multistage.Stage1" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="multistage.multistage_train.html" class="btn btn-neutral float-right" title="multistage.multistage_train" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, Kaya Unalmis.
+      <span class="lastupdated">Last updated on Jan 22, 2026.
+      </span></p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
