@@ -283,10 +283,16 @@ def print_errors(net, x_test, u_data_test, check_dim=0):
 
     u_rms_err = jnp.sqrt(squared_error(u_pred, u_data_test).mean())
     u_abs_err = jnp.abs(u_pred - u_data_test).mean()
-    u_rel_err = jnp.linalg.norm(u_pred - u_data_test) / jnp.linalg.norm(u_data_test)
+    data_norm = jnp.linalg.norm(u_data_test)
+    u_rel_err = jnp.where(
+        data_norm > 0, jnp.linalg.norm(u_pred - u_data_test) / data_norm, jnp.nan
+    )
     print(f"RMS error         = {u_rms_err:.6e}")
     print(f"Abs mean error    = {u_abs_err:.6e}")
-    print(f"L2 relative error = {u_rel_err:.6e}\n")
+    if bool(jnp.isfinite(u_rel_err)):
+        print(f"L2 relative error = {u_rel_err:.6e}\n")
+    else:
+        print("L2 relative error = undefined (zero reference norm)\n")
 
 
 def rescale(x, lb, ub):
@@ -329,9 +335,21 @@ def _operator_orders(order, in_size):
 def _beta_rms(beta, num_terms):
     """Return scalar or per-operator-term RMS coefficient magnitudes."""
     beta = jnp.asarray(beta)
+    if beta.ndim == 1 and beta.shape[0] == num_terms and num_terms > 1:
+        raise ValueError(
+            "1D beta with length equal to the number of operator terms is ambiguous. "
+            "Use shape (n_samples,) for scalar sample coefficients or "
+            "shape (..., num_terms) with at least two dimensions for per-term "
+            "coefficients."
+        )
     if beta.ndim > 0 and beta.shape[-1] == num_terms:
         beta = beta.reshape((-1, num_terms))
         return jnp.sqrt(jnp.square(beta).mean(axis=0))
+    if beta.ndim > 1:
+        raise ValueError(
+            "beta coefficient arrays must be scalar, have shape (n_samples,), "
+            "or have one coefficient per operator term on the last axis."
+        )
     return jnp.sqrt(jnp.square(beta).mean())
 
 

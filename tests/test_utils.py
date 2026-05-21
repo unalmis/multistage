@@ -6,10 +6,12 @@ import pytest
 from matplotlib import pyplot as plt
 
 from multistage._utils import (
+    _beta_rms,
     _operator_scale,
     adaptive_sample,
     generate_concentrated_data,
     generate_data,
+    print_errors,
     stats,
     stats_chebyshev,
 )
@@ -45,6 +47,45 @@ def test_operator_scale_uses_separate_pde_terms():
         _operator_scale(kappa, lb, ub, order=(1, 2), beta=jnp.array([1.0, 0.25])),
         4.0,
     )
+
+
+def test_beta_rms_rejects_transposed_per_term_coefficients():
+    """Per-term beta coefficients must live on the last axis."""
+    beta = jnp.ones((4, 8))
+    with pytest.raises(ValueError, match="last axis"):
+        _beta_rms(beta, num_terms=4)
+
+
+def test_beta_rms_rejects_ambiguous_1d_coefficients():
+    """A 1D beta vector cannot be both samples and per-term coefficients."""
+    with pytest.raises(ValueError, match="ambiguous"):
+        _beta_rms(jnp.array([1.0, 2.0, 3.0, 4.0]), num_terms=4)
+
+
+def test_beta_rms_accepts_unambiguous_shapes():
+    """Scalar sample and per-term coefficient shapes should both be explicit."""
+    np.testing.assert_allclose(
+        _beta_rms(jnp.array([1.0, 2.0, 3.0]), num_terms=4),
+        jnp.sqrt(jnp.mean(jnp.array([1.0, 2.0, 3.0]) ** 2)),
+    )
+    np.testing.assert_allclose(
+        _beta_rms(jnp.array([[1.0, 2.0, 3.0, 4.0]]), num_terms=4),
+        jnp.array([1.0, 2.0, 3.0, 4.0]),
+    )
+
+
+def test_print_errors_reports_zero_reference_relative_error(capsys):
+    """Zero reference data should not print an infinite relative error."""
+
+    class LinearModel(eqx.Module):
+        def __call__(self, x):
+            return x
+
+    print_errors(LinearModel(), [jnp.array([0.0, 1.0])], jnp.zeros(2))
+
+    captured = capsys.readouterr()
+    assert "undefined (zero reference norm)" in captured.out
+    assert "inf" not in captured.out.lower()
 
 
 def test_epsilon_estimate_uses_physical_coordinate_scaling():

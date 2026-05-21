@@ -125,7 +125,9 @@ def plot_2d_residual(
     F_grid = f_pred.reshape(T.shape)
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    limit = jnp.max(jnp.abs(F_grid))
+    limit = float(jnp.max(jnp.abs(F_grid)))
+    if not np.isfinite(limit) or limit <= 0:
+        limit = 1.0
     cp = ax.pcolormesh(T, X, F_grid, cmap=cmap, vmin=-limit, vmax=limit, shading="auto")
     cbar = fig.colorbar(cp, ax=ax)
     cbar.set_label("Residual value")
@@ -194,18 +196,26 @@ def plot_loss(checkpoint_path, figname, title="Loss"):
             continue
         loss = np.concatenate((loss, restored))
 
-        min_line_y = 0.9 * restored.min()
-        coeff, expo = f"{min_line_y:.1e}".split("e")
-        ax.axhline(
-            y=min_line_y,
-            color="k",
-            linestyle="--",
-            linewidth=1.5,
-            label=rf"${coeff} \times 10^{{{int(expo)}}}$",
-        )
+        positive_loss = restored[np.isfinite(restored) & (restored > 0)]
+        if positive_loss.size:
+            min_line_y = 0.9 * positive_loss.min()
+            coeff, expo = f"{min_line_y:.1e}".split("e")
+            ax.axhline(
+                y=min_line_y,
+                color="k",
+                linestyle="--",
+                linewidth=1.5,
+                label=rf"${coeff} \times 10^{{{int(expo)}}}$",
+            )
 
-    if loss.size:
-        ax.plot(loss, label="Training Loss", linewidth=2)
+    if loss.size and np.any(np.isfinite(loss) & (loss > 0)):
+        positive_idx = np.isfinite(loss) & (loss > 0)
+        ax.plot(
+            np.arange(loss.size)[positive_idx],
+            loss[positive_idx],
+            label="Training Loss",
+            linewidth=2,
+        )
         ax.set_yscale("log")
         ax.set_xlabel("Step")
         ax.set_ylabel("Loss")

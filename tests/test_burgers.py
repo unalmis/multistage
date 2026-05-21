@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
+import pytest
 from jax import config, grad, vmap
 from optax import squared_error
 from orthax.hermite import hermgauss
@@ -19,6 +20,7 @@ from multistage import (
     plot_2d_residual,
     plot_loss,
 )
+from multistage._multistage import _stage_correction_params_or_none, _train
 from multistage._utils import (
     count_params,
     generate_concentrated_data,
@@ -147,10 +149,42 @@ def loss_s1_burgers_unreduced(
     return jnp.concatenate((loss_data, loss_resid))
 
 
-u_fn_s2 = Stage2.__call__
-u_t_s2 = grad(u_fn_s2, argnums=1)
-u_x_s2 = grad(u_fn_s2, argnums=2)
-u_xx_s2 = grad(grad(u_fn_s2, argnums=2), argnums=2)
+def _scalar_param(x):
+    if hasattr(x, "ndim") and x.ndim > 0:
+        return x[0]
+    return x
+
+
+def _stage_lambda_2(model):
+    lam_2 = model.get_param("lambda_2", None)
+    log_lam_2 = model.get_param("log_lambda_2", None)
+    if lam_2 is not None and log_lam_2 is not None:
+        raise ValueError(
+            "A single stage cannot define both 'lambda_2' and 'log_lambda_2'."
+        )
+    if lam_2 is not None:
+        return lam_2
+    if log_lam_2 is not None:
+        return jnp.exp(log_lam_2)
+    return 0.0
+
+
+def u_prev_fn_s2(model, t, x):
+    return model.s1(t, x)
+
+
+u_prev_t_s2 = grad(u_prev_fn_s2, argnums=1)
+u_prev_x_s2 = grad(u_prev_fn_s2, argnums=2)
+u_prev_xx_s2 = grad(grad(u_prev_fn_s2, argnums=2), argnums=2)
+u_corr_fn_s2 = Stage2.compute_s2
+u_corr_t_s2 = grad(u_corr_fn_s2, argnums=1)
+u_corr_xx_s2 = grad(grad(u_corr_fn_s2, argnums=2), argnums=2)
+
+
+@partial(grad, argnums=2)
+def _u_prod_x(model, t, x):
+    # Linearized derivative of the nonlinear Burgers flux cross term.
+    return model.s1(t, x) * model.compute_s2(t, x)
 
 
 @partial(vmap, in_axes=(None, 0, 0))
@@ -173,39 +207,51 @@ def residual_s2_burgers(model, t, x):
 
     """
     u = model(t, x)
-    ut = u_t_s2(model, t, x)
-    ux = u_x_s2(model, t, x)
-    uxx = u_xx_s2(model, t, x)
-    lam_1, lam_2 = total_lambdas(model)
-    f = ut + lam_1 * u * ux - lam_2 * uxx
+    u_prev = model.s1(t, x)
+    u_prev_t = u_prev_t_s2(model, t, x)
+    u_prev_x = u_prev_x_s2(model, t, x)
+    u_prev_xx = u_prev_xx_s2(model, t, x)
+    u_corr_t = u_corr_t_s2(model, t, x)
+    u_corr_xx = u_corr_xx_s2(model, t, x)
+    lam_1, lam_2 = total_lambdas(model.s1)
+    dlam_1 = _scalar_param(model.get_param("lambda_1", 0.0))
+    dlam_2 = _scalar_param(_stage_lambda_2(model))
+
+    prev_resid = u_prev_t + lam_1 * u_prev * u_prev_x - lam_2 * u_prev_xx
+    corr_resid = (
+        u_corr_t
+        + lam_1 * _u_prod_x(model, t, x)
+        - lam_2 * u_corr_xx
+        + dlam_1 * u_prev * u_prev_x
+        - dlam_2 * u_prev_xx
+    )
+    f = prev_resid + model.epsilon * corr_resid
     return u, f
 
 
 def total_lambdas(model):
 
-    current = model
-    while True:
-        lam_1 = current.get_param("lambda_1", None)
-        log_lam_2 = current.get_param("log_lambda_2", None)
-        if (lam_1 is not None) or (log_lam_2 is not None):
-            lam_1 = 0.0 if lam_1 is None else lam_1
-            lam_2 = 0.0 if log_lam_2 is None else jnp.exp(log_lam_2)
-            break
-        if not hasattr(current, "s1"):
-            lam_1 = 0.0
-            lam_2 = 0.0
-            break
-        current = current.s1
+    epsilons = [model.epsilon]
+    lams_1 = [model.get_param("lambda_1", 0.0)]
+    lams_2 = [_stage_lambda_2(model)]
+    s1 = model
+    while hasattr(s1, "s1"):
+        s1 = s1.s1
+        lams_1.append(s1.get_param("lambda_1", 0.0))
+        lams_2.append(_stage_lambda_2(s1))
+        epsilons.append(s1.epsilon)
 
-    if hasattr(lam_1, "size"):
-        lam_1 = lam_1[0]
-    if hasattr(lam_2, "size"):
-        lam_2 = lam_2[0]
-    return lam_1, lam_2
+    lam_1 = 0.0
+    lam_2 = 0.0
+    for epsilon, lam_1_i, lam_2_i in zip(epsilons, lams_1, lams_2):
+        lam_1 += epsilon * lam_1_i
+        lam_2 += epsilon * lam_2_i
+
+    return _scalar_param(lam_1), _scalar_param(lam_2)
 
 
 def test_total_lambdas_for_forward_and_inverse_stages():
-    """Forward params stay fixed; inverse params are latest total estimates."""
+    """Forward params stay fixed; inverse params are staged corrections."""
     lb_test = jnp.array([0.0, -1.0])
     ub_test = jnp.array([1.0, 1.0])
     s1 = Stage1(
@@ -230,13 +276,24 @@ def test_total_lambdas_for_forward_and_inverse_stages():
         kappa=jnp.array([2.0, 3.0]),
         params={
             "lambda_1": jnp.array([2.0]),
-            "log_lambda_2": jnp.log(jnp.array([0.5])),
+            "lambda_2": jnp.array([0.5]),
         },
         params_are_trainable=True,
     )
     lam_1, lam_2 = total_lambdas(s2_inverse)
-    assert jnp.allclose(lam_1, 2.0)
-    assert jnp.allclose(lam_2, 0.5)
+    assert jnp.allclose(lam_1, 1.0 + 1e-3 * 2.0)
+    assert jnp.allclose(lam_2, 0.25 + 1e-3 * 0.5)
+
+    s2_log_inverse = Stage2(
+        s1,
+        epsilon=1e-3,
+        kappa=jnp.array([2.0, 3.0]),
+        params={"log_lambda_2": jnp.log(jnp.array([0.5]))},
+        params_are_trainable=True,
+    )
+    lam_1, lam_2 = total_lambdas(s2_log_inverse)
+    assert jnp.allclose(lam_1, 1.0)
+    assert jnp.allclose(lam_2, 0.25 + 1e-3 * 0.5)
 
     s2_partial_inverse = Stage2(
         s1,
@@ -246,8 +303,279 @@ def test_total_lambdas_for_forward_and_inverse_stages():
         params_are_trainable=True,
     )
     lam_1, lam_2 = total_lambdas(s2_partial_inverse)
-    assert jnp.allclose(lam_1, 3.0)
+    assert jnp.allclose(lam_1, 1.0 + 1e-3 * 3.0)
     assert jnp.allclose(lam_2, 0.25)
+
+    s2_signed_diffusion_correction = Stage2(
+        s1,
+        epsilon=1e-3,
+        kappa=jnp.array([2.0, 3.0]),
+        params={"lambda_2": jnp.array([-0.5])},
+        params_are_trainable=True,
+    )
+    lam_1, lam_2 = total_lambdas(s2_signed_diffusion_correction)
+    assert jnp.allclose(lam_1, 1.0)
+    assert jnp.allclose(lam_2, 0.25 - 1e-3 * 0.5)
+
+
+def test_total_lambdas_rejects_ambiguous_lambda_2_parameterization():
+    """Physical and transformed diffusion params cannot coexist on one stage."""
+    s1 = Stage1(
+        lb,
+        ub,
+        in_size=2,
+        out_size=1,
+        params={
+            "lambda_1": jnp.array([1.0]),
+            "log_lambda_2": jnp.log(jnp.array([0.25])),
+        },
+        params_are_trainable=False,
+    )
+    s2 = Stage2(
+        s1,
+        epsilon=1e-3,
+        kappa=jnp.array([2.0, 3.0]),
+        params={
+            "lambda_2": jnp.array([0.5]),
+            "log_lambda_2": jnp.log(jnp.array([0.5])),
+        },
+        params_are_trainable=True,
+    )
+
+    with pytest.raises(ValueError, match="lambda_2.*log_lambda_2"):
+        total_lambdas(s2)
+
+
+def test_forward_problem_params_stay_fixed_across_stage_training():
+    """Frozen PDE params stay fixed and do not seed correction params."""
+    key = jax.random.PRNGKey(0)
+    s1_key, s2_key = jax.random.split(key)
+    lam_1 = jnp.array([0.3])
+    lam_2 = jnp.array([0.2])
+    s1 = Stage1(
+        lb,
+        ub,
+        in_size=2,
+        out_size=1,
+        width_size=4,
+        depth=2,
+        params={"lambda_1": lam_1, "log_lambda_2": jnp.log(lam_2)},
+        params_are_trainable=False,
+        key=s1_key,
+    )
+    t = jnp.linspace(0.0, 1.0, 8)
+    x = jnp.linspace(-1.0, 1.0, 8)
+    u_stage1 = jnp.linspace(-0.5, 0.5, 8)
+    initial_s1_output = vmap(s1)(t, x)
+
+    def stage1_loss_fun(model, t_data, x_data, u_data, t_col=None, x_col=None):
+        del t_col, x_col
+        u_loss = jnp.mean((vmap(model)(t_data, x_data) - u_data) ** 2)
+        current_lam_1, current_lam_2 = total_lambdas(model)
+        param_loss = (current_lam_1 - 5.0) ** 2 + (current_lam_2 - 7.0) ** 2
+        return u_loss + param_loss
+
+    trained_s1 = _train(
+        s1,
+        stage1_loss_fun,
+        [t, x],
+        u_stage1,
+        optimizer=optax.sgd,
+        steps=5,
+        learning_rate=1e-2,
+        adaptive_sampler=None,
+        return_loss_history=False,
+        print_every=0,
+        checkpoint_path=None,
+        normalize_loss=False,
+    )
+
+    trained_s1_output = vmap(trained_s1)(t, x)
+    assert not jnp.allclose(trained_s1_output, initial_s1_output)
+    np.testing.assert_allclose(trained_s1.get_param("lambda_1"), lam_1, rtol=0, atol=0)
+    np.testing.assert_allclose(
+        trained_s1.get_param("log_lambda_2"), jnp.log(lam_2), rtol=0, atol=0
+    )
+
+    correction_params = _stage_correction_params_or_none(trained_s1._params)
+    assert correction_params is None
+    s2 = Stage2(
+        trained_s1,
+        epsilon=0.1,
+        kappa=jnp.array([2.0, 3.0]),
+        width_size=4,
+        depth=2,
+        params=correction_params,
+        params_are_trainable=correction_params is not None,
+        key=s2_key,
+    )
+    assert tuple(s2.params.items()) == ()
+    np.testing.assert_allclose(
+        total_lambdas(s2), total_lambdas(trained_s1), rtol=0, atol=0
+    )
+
+    u_stage2 = jnp.ones_like(u_stage1)
+    initial_s2_correction = vmap(s2.compute_s2)(t, x)
+
+    def stage2_loss_fun(model, t_data, x_data, u_data, t_col=None, x_col=None):
+        del t_col, x_col
+        correction_loss = jnp.mean(
+            (vmap(model.compute_s2)(t_data, x_data) - u_data) ** 2
+        )
+        current_lam_1, current_lam_2 = total_lambdas(model)
+        param_loss = (current_lam_1 - 5.0) ** 2 + (current_lam_2 - 7.0) ** 2
+        return correction_loss + param_loss
+
+    trained_s2 = _train(
+        s2,
+        stage2_loss_fun,
+        [t, x],
+        u_stage2,
+        optimizer=optax.sgd,
+        steps=5,
+        learning_rate=1e-2,
+        adaptive_sampler=None,
+        return_loss_history=False,
+        print_every=0,
+        checkpoint_path=None,
+        normalize_loss=False,
+    )
+
+    assert not jnp.allclose(vmap(trained_s2.compute_s2)(t, x), initial_s2_correction)
+    assert tuple(trained_s2.params.items()) == ()
+    np.testing.assert_allclose(
+        trained_s2.s1.get_param("lambda_1"),
+        trained_s1.get_param("lambda_1"),
+        rtol=0,
+        atol=0,
+    )
+    np.testing.assert_allclose(
+        trained_s2.s1.get_param("log_lambda_2"),
+        trained_s1.get_param("log_lambda_2"),
+        rtol=0,
+        atol=0,
+    )
+    np.testing.assert_allclose(
+        total_lambdas(trained_s2), total_lambdas(trained_s1), rtol=0, atol=0
+    )
+
+
+def test_log_parameterized_inverse_params_seed_physical_zero_corrections():
+    """A log base parameter should become a signed zero physical correction."""
+    key = jax.random.PRNGKey(0)
+    s1_key, s2_key = jax.random.split(key)
+    base_lam_1 = jnp.array([0.3])
+    base_lam_2 = jnp.array([0.2])
+    s1 = Stage1(
+        lb,
+        ub,
+        in_size=2,
+        out_size=1,
+        width_size=4,
+        depth=2,
+        params={"lambda_1": base_lam_1, "log_lambda_2": jnp.log(base_lam_2)},
+        params_are_trainable=True,
+        key=s1_key,
+    )
+    correction_params = _stage_correction_params_or_none(s1._params)
+
+    assert correction_params.keys == ("lambda_1", "lambda_2")
+    np.testing.assert_allclose(correction_params["lambda_1"], jnp.array([0.0]))
+    np.testing.assert_allclose(correction_params["lambda_2"], jnp.array([0.0]))
+
+    s2 = Stage2(
+        s1,
+        epsilon=0.1,
+        kappa=jnp.array([2.0, 3.0]),
+        width_size=4,
+        depth=2,
+        params=correction_params,
+        params_are_trainable=True,
+        key=s2_key,
+    )
+    np.testing.assert_allclose(total_lambdas(s2), total_lambdas(s1), rtol=0, atol=0)
+
+    t = jnp.linspace(0.0, 1.0, 8)
+    x = jnp.linspace(-1.0, 1.0, 8)
+    u_data = jnp.zeros(8)
+
+    def stage2_param_loss(model, t_data, x_data, u_data, t_col=None, x_col=None):
+        del t_data, x_data, u_data, t_col, x_col
+        return jnp.mean((model.get_param("lambda_2") + 0.5) ** 2)
+
+    trained_s2 = _train(
+        s2,
+        stage2_param_loss,
+        [t, x],
+        u_data,
+        optimizer=optax.sgd,
+        steps=5,
+        learning_rate=1e-1,
+        adaptive_sampler=None,
+        return_loss_history=False,
+        print_every=0,
+        checkpoint_path=None,
+        normalize_loss=False,
+    )
+
+    assert trained_s2.get_param("log_lambda_2", None) is None
+    assert trained_s2.get_param("lambda_2")[0] < 0.0
+    lam_1_total, lam_2_total = total_lambdas(trained_s2)
+    np.testing.assert_allclose(lam_1_total, base_lam_1[0], rtol=0, atol=0)
+    assert lam_2_total < base_lam_2[0]
+    np.testing.assert_allclose(
+        lam_2_total,
+        base_lam_2[0] + trained_s2.epsilon * trained_s2.get_param("lambda_2")[0],
+        rtol=1e-12,
+    )
+
+
+def test_stage2_burgers_residual_linearizes_nonlinear_flux():
+    """Stage-2 residual keeps the Burgers cross term once and drops O(eps^2)."""
+    key = jax.random.PRNGKey(0)
+    lam_1 = 1.3
+    lam_2 = 0.4
+    s1 = Stage1(
+        lb,
+        ub,
+        in_size=2,
+        out_size=1,
+        width_size=4,
+        depth=2,
+        params={
+            "lambda_1": jnp.array([lam_1]),
+            "log_lambda_2": jnp.log(jnp.array([lam_2])),
+        },
+        key=key,
+    )
+    model = Stage2(s1, epsilon=0.07, kappa=jnp.array([2.0, 3.0]), key=key)
+    t = jnp.array([0.1, 0.4, 0.8])
+    x = jnp.array([-0.7, 0.2, 0.9])
+
+    def full_u(model, ti, xi):
+        return model(ti, xi)
+
+    full_t = grad(full_u, argnums=1)
+    full_x = grad(full_u, argnums=2)
+    full_xx = grad(grad(full_u, argnums=2), argnums=2)
+
+    @partial(vmap, in_axes=(None, 0, 0))
+    def full_burgers(model, ti, xi):
+        u = model(ti, xi)
+        return (
+            full_t(model, ti, xi)
+            + lam_1 * u * full_x(model, ti, xi)
+            - lam_2 * full_xx(model, ti, xi)
+        )
+
+    def corr_u(model, ti, xi):
+        return model.compute_s2(ti, xi)
+
+    corr_x = vmap(grad(corr_u, argnums=2), in_axes=(None, 0, 0))(model, t, x)
+    corr = vmap(corr_u, in_axes=(None, 0, 0))(model, t, x)
+    _, staged = residual_s2_burgers(model, t, x)
+    expected = full_burgers(model, t, x) - model.epsilon**2 * lam_1 * corr * corr_x
+    np.testing.assert_allclose(staged, expected, rtol=1e-12, atol=1e-12)
 
 
 def beta_burgers(model, t, x):
