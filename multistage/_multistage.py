@@ -58,17 +58,79 @@ def _trainable_params_or_none(params):
     return params if leaves else None
 
 
-def _feature_scale_from_frequency(kappa, in_size):
+_DEFAULT_STAGE_CORRECTION_PARAM_MAP = {"log_lambda_2": "lambda_2"}
+_TRANSFORMED_PARAM_PREFIXES = ("log_", "exp_")
+
+
+def _stage_correction_entry(key, val, correction_param_map):
+    spec = correction_param_map.get(key, key)
+    if callable(spec):
+        correction_key, correction_val = spec(key, val)
+    elif isinstance(spec, tuple):
+        correction_key, initializer = spec
+        correction_val = initializer(val) if callable(initializer) else initializer
+    else:
+        correction_key = spec
+        correction_val = jnp.zeros_like(val)
+    return correction_key, correction_val
+
+
+def _stage_correction_params_or_none(params, correction_param_map=None):
+    """Initialize trainable PDE parameter corrections for the next stage.
+
+    A later stage stores corrections, not another copy of the previous total
+    estimate. Transformed parameters require an explicit map because their
+    neutral correction value depends on how the PDE residual combines stages.
+    """
+    if correction_param_map is None:
+        correction_param_map = _DEFAULT_STAGE_CORRECTION_PARAM_MAP
+
+    params = _trainable_params_or_none(params)
+    if params is None:
+        return None
+
+    corrections = {}
+    for key, val in params.items():
+        if val is None:
+            continue
+        if key not in correction_param_map and key.startswith(
+            _TRANSFORMED_PARAM_PREFIXES
+        ):
+            raise ValueError(
+                f"Parameter '{key}' looks transformed, but no stage correction "
+                "initializer was provided for it. Pass correction_param_map to "
+                "prescribe the neutral next-stage parameter."
+            )
+        correction_key, correction_val = _stage_correction_entry(
+            key, val, correction_param_map
+        )
+        if correction_key in corrections:
+            raise ValueError(
+                "Multiple trainable parameters initialize the same correction "
+                f"parameter '{correction_key}'. Check the stage correction map."
+            )
+        corrections[correction_key] = correction_val
+
+    return _ParamContainer(corrections) if corrections else None
+
+
+def _feature_scale_from_frequency(kappa, in_size, feature_map="separable"):
     """Convert target angular frequency to an input scale for ``eqx.nn.Linear``.
 
     Equinox initializes ``Linear(in_size, out_size)`` weights uniformly on
     ``[-1 / sqrt(in_size), 1 / sqrt(in_size)]``, so each first-layer weight has
-    RMS magnitude ``1 / sqrt(3 * in_size)``. The paper's scale factor multiplies
-    the initialized first-layer weights; compensating for that RMS keeps
-    ``kappa`` in our API equal to the target angular frequency.
+    RMS magnitude ``1 / sqrt(3 * in_size)``. Separable features mask each row to
+    one coordinate, so the masked component needs the full ``sqrt(3 * in_size)``
+    compensation. Dense random features use all coordinates in each row; using
+    ``sqrt(3)`` keeps an isotropic random wave-vector's RMS norm at ``kappa``
+    instead of overscaling it by ``sqrt(in_size)``.
     """
     kappa = jnp.asarray(kappa)
-    return kappa * jnp.sqrt(3.0 * in_size)
+    if feature_map == "separable":
+        return kappa * jnp.sqrt(3.0 * in_size)
+    if feature_map == "random":
+        return kappa * jnp.sqrt(3.0)
+    raise ValueError("feature_map must be 'separable' or 'random'.")
 
 
 def _feature_mask(width_size, in_size, feature_map):
@@ -258,11 +320,15 @@ class Stage2(eqx.Module):
         The activation function for each hidden layer after the first.
         Default is ``jnp.tanh``.
     params : dict[str, jax.Array]
-        Dictionary of parameters to learn and initial guesses.
+        Dictionary of parameter corrections to learn and initial guesses. The
+        automatic multistage constructors initialize corrections so that the
+        total PDE parameters are unchanged at stage creation. Manual transformed
+        parameters are allowed, but must be initialized in their transformed
+        coordinates.
         E.g. for Burgers:
         {
             "lambda_1": jax.random.normal(l1_key, (1,)) * 0.1,
-            "log_lambda_2": -6.0 + jax.random.normal(l2_key, (1,)) * 0.1,
+            "log_lambda_2": jnp.log(0.5),
         }
     params_are_trainable : bool
         Whether the ``params`` values should be frozen or an optimizable quantity.
@@ -391,7 +457,9 @@ class Stage2(eqx.Module):
     def compute_s2(self, *args):
         """Compute just this stage of the output."""
         x = rescale(jnp.stack(args), self.lb, self.ub)
-        feature_scale = _feature_scale_from_frequency(self.kappa, self.in_size)
+        feature_scale = _feature_scale_from_frequency(
+            self.kappa, self.in_size, self._feature_map
+        )
         weight = self._first.weight * unwrap(self._feature_mask)
         bias = 0 if self._first.bias is None else self._first.bias
 
@@ -410,11 +478,9 @@ class Stage2(eqx.Module):
         return x
 
     def get_param(self, key, default=None):
-        """Return this stage's parameter, or inherit it from the previous stage."""
+        """Return ``self.params["key"]`` if it exists and is not None else default."""
         val = self.params.get(key, default)
-        if val is not None:
-            return val
-        return self.s1.get_param(key, default)
+        return default if val is None else val
 
     def print_params(self):
         """Print the params of this network."""
@@ -432,6 +498,12 @@ def _is_multiple_or_last(step, multiple, last):
     if multiple <= 0:
         return step == (last - 1)
     return ((step % multiple) == 0) or (step == (last - 1))
+
+
+def _is_completed_multiple_or_last(step, multiple, last):
+    if multiple <= 0:
+        return step == (last - 1)
+    return (((step + 1) % multiple) == 0) or (step == (last - 1))
 
 
 def _fill_lask_k_buffer(last_k_loss, loss_history):
@@ -574,7 +646,7 @@ def _train(  # noqa: C901
 
     manager = None
     start_step = 0
-    if checkpoint_path:
+    if checkpoint_path and checkpoint_every > 0:
         manager = checkpoint_manager(checkpoint_path)
 
         if manager.latest_step() is not None:
@@ -711,8 +783,7 @@ def _train(  # noqa: C901
         if (
             manager
             and (checkpoint_every > 0)
-            and (step > start_step)
-            and _is_multiple_or_last(step, checkpoint_every, steps)
+            and _is_completed_multiple_or_last(step, checkpoint_every, steps)
         ):
             man_args = {
                 "trainable": trainable,
@@ -810,13 +881,13 @@ def _trust_region_train(  # noqa: C901
     solver = optimistix.LevenbergMarquardt(
         rtol=rtol,
         atol=atol,
-        verbose=frozenset({"step", "loss", "step_size"}),
+        verbose=False,
         linear_solver=linear_solver,
     )
 
     manager = None
     start_step = 0
-    if checkpoint_path:
+    if checkpoint_path and checkpoint_every > 0:
         manager = checkpoint_manager(checkpoint_path)
 
         if manager.latest_step() is not None:
@@ -828,7 +899,6 @@ def _trust_region_train(  # noqa: C901
             trainable = restored["trainable"]
             loss_ref = restored.get("loss_ref", loss_ref)
             net = eqx.combine(trainable, frozen, static)
-            start_step += 1
 
     def raw_loss(trainable, args):
         frozen, static, *rest = args
@@ -847,6 +917,15 @@ def _trust_region_train(  # noqa: C901
     start_train_time = time.time()
 
     x_col = [None] * net.in_size
+    if start_step >= steps:
+        end_train_time = time.time()
+        print("--- Finished training ---\n")
+        print(f"Training time: {end_train_time - start_train_time:.2f}")
+        if manager:
+            manager.wait_until_finished()
+            manager.close()
+        return net
+
     step_frequencies = [steps]
     if adaptive_sampler is not None and adaptive_sample_freq > 0:
         step_frequencies.append(adaptive_sample_freq)
@@ -959,6 +1038,7 @@ def multistage_train(
     frequency_estimator="spectral",
     chebyshev=False,
     feature_map="separable",
+    stage_correction_param_map=None,
     x_stage2=None,
     training_samples_stage2=None,
     # progress & reproducibility params
@@ -1031,6 +1111,10 @@ def multistage_train(
     feature_map : {"separable", "random"}
         First-layer feature geometry for new stages. ``"separable"`` is the
         default; ``"random"`` preserves the previous dense plane-wave mapping.
+    stage_correction_param_map : dict, optional
+        Mapping from current-stage parameter names to next-stage correction
+        names or initializers. Defaults include ``{"log_lambda_2": "lambda_2"}``
+        for Burgers-style signed physical diffusion corrections.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
@@ -1152,7 +1236,9 @@ def multistage_train(
         print(f"RMS prediction residual used for stage {stage +1} is {eps_prediction}.")
         print(f"Estimate frequency kappa used for stage {stage +1} is {kappa}.")
 
-        params = _trainable_params_or_none(getattr(net, "_params", None))
+        params = _stage_correction_params_or_none(
+            getattr(net, "_params", None), stage_correction_param_map
+        )
 
         key, subkey = jax.random.split(key)
         net_kwargs_for_save = dict(
@@ -1208,6 +1294,7 @@ def multistage_trust_region_train(
     frequency_estimator="spectral",
     chebyshev=False,
     feature_map="separable",
+    stage_correction_param_map=None,
     x_stage2=None,
     training_samples_stage2=None,
     # Progress & reproducibility params
@@ -1302,6 +1389,10 @@ def multistage_trust_region_train(
     feature_map : {"separable", "random"}
         First-layer feature geometry for new stages. ``"separable"`` is the
         default; ``"random"`` preserves the previous dense plane-wave mapping.
+    stage_correction_param_map : dict, optional
+        Mapping from current-stage parameter names to next-stage correction
+        names or initializers. Defaults include ``{"log_lambda_2": "lambda_2"}``
+        for Burgers-style signed physical diffusion corrections.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
@@ -1443,7 +1534,9 @@ def multistage_trust_region_train(
         print(f"RMS prediction residual used for stage {stage +1} is {eps_prediction}.")
         print(f"Estimate frequency kappa used for stage {stage +1} is {kappa}.")
 
-        params = _trainable_params_or_none(getattr(net, "_params", None))
+        params = _stage_correction_params_or_none(
+            getattr(net, "_params", None), stage_correction_param_map
+        )
 
         key, subkey = jax.random.split(key)
         net_kwargs_for_save = dict(
