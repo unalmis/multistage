@@ -95,6 +95,7 @@ def test_dominant_frequency_1d(f_model, f_true, num_samples, heuristic):
         num_samples=(num_samples,),
         order=(1,),
         heuristic=heuristic,
+        frequency_estimator="zero_crossing",
     )
     np.testing.assert_allclose(
         kappa / heuristic,
@@ -108,6 +109,48 @@ def test_dominant_frequency_1d(f_model, f_true, num_samples, heuristic):
         err_msg="dominant frequency is wrong due to poor heuristic choice",
         rtol=3e-2,
     )
+
+
+def test_spectral_frequency_ignores_dc_offset():
+    """The default Fourier estimator should not rely on sign changes."""
+    net = _DummyModel(-1.0, 1.0, in_size=1)
+    params, static = eqx.partition(net, eqx.is_inexact_array)
+    k = 17 * jnp.pi
+
+    def residual_1d(model, x):
+        residual = 10.0 + 0.01 * jnp.sin(k * x)
+        return residual, residual
+
+    _, _, kappa = stats(
+        params,
+        static,
+        residual_1d,
+        num_samples=(256,),
+        order=(1,),
+    )
+    np.testing.assert_allclose(kappa, jnp.array([k]), rtol=1e-12)
+
+
+def test_spectral_frequency_uses_one_sided_amplitudes():
+    """Interior Fourier modes should not be underweighted against Nyquist."""
+    net = _DummyModel(-1.0, 1.0, in_size=1)
+    params, static = eqx.partition(net, eqx.is_inexact_array)
+
+    def residual_1d(model, x):
+        del model
+        interior = jnp.sin(4 * jnp.pi * x)
+        nyquist = 0.75 * jnp.cos(16 * jnp.pi * x)
+        residual = interior + nyquist
+        return residual, residual
+
+    _, _, kappa = stats(
+        params,
+        static,
+        residual_1d,
+        num_samples=(32,),
+        order=(1,),
+    )
+    np.testing.assert_allclose(kappa, jnp.array([4 * jnp.pi]), rtol=1e-12)
 
 
 @pytest.mark.parametrize(
@@ -184,6 +227,7 @@ def test_dominant_frequency_2d(fx_m, fx_t, ft_m, ft_t, num_samples, heuristic):
         num_samples=(num_samples, num_samples),
         order=(1,),
         heuristic=heuristic,
+        frequency_estimator="zero_crossing",
     )
     np.testing.assert_allclose(
         kappa[0] / heuristic,

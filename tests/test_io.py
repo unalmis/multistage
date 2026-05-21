@@ -3,8 +3,10 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import pytest
+from paramax import unwrap
 
 from multistage import Stage1, Stage2, load, save
 from multistage._multistage import (
@@ -62,6 +64,29 @@ def test_stage2_frequency_compensates_for_linear_initialization():
     """``kappa`` is a target frequency, not the raw first-layer scale factor."""
     kappa = jnp.array([4.0, 7.0])
     assert jnp.allclose(_feature_scale_from_frequency(kappa, in_size=2), kappa * 6**0.5)
+
+
+def test_stage2_feature_map_modes():
+    """The default feature map is axis-separable; random mode is dense."""
+    net, _ = _get_s1(params_are_trainable=False)
+    separable = Stage2(
+        net,
+        epsilon=0.1,
+        kappa=jnp.array([2.0, 3.0]),
+        width_size=5,
+        feature_map="separable",
+    )
+    expected = jax.nn.one_hot(jnp.arange(5) % 2, 2)
+    np.testing.assert_allclose(unwrap(separable._feature_mask), expected)
+
+    random = Stage2(
+        net,
+        epsilon=0.1,
+        kappa=jnp.array([2.0, 3.0]),
+        width_size=5,
+        feature_map="random",
+    )
+    np.testing.assert_allclose(unwrap(random._feature_mask), jnp.ones((5, 2)))
 
 
 def test_train_uses_initial_adaptive_sample():
