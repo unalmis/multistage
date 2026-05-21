@@ -16,9 +16,7 @@ import orbax.checkpoint as ocp
 from jax import config, jit, value_and_grad
 from paramax import non_trainable, unwrap
 
-from multistage import save
-
-from ._io_utils import _ParamContainer, checkpoint_manager
+from ._io_utils import _ParamContainer, checkpoint_manager, save
 from ._utils import (
     adaptive_sample,
     is_not_trainable,
@@ -29,6 +27,68 @@ from ._utils import (
 )
 
 config.update("jax_enable_x64", True)
+
+
+def _coerce_params(params, params_are_trainable):
+    """Return a consistently initialized parameter container."""
+    if params is None:
+        return _ParamContainer({})
+    if not isinstance(params, _ParamContainer):
+        params = _ParamContainer(params)
+    if params_are_trainable:
+        return params
+    return _ParamContainer(
+        {
+            key: val if (val is None or is_not_trainable(val)) else non_trainable(val)
+            for key, val in params.items()
+        }
+    )
+
+
+def _trainable_params_or_none(params):
+    """Extract trainable PDE parameters, returning None when there are none."""
+    if params is None:
+        return None
+    params = eqx.filter(
+        params, is_not_trainable, inverse=True, is_leaf=is_not_trainable
+    )
+    leaves = [
+        leaf for leaf in jax.tree_util.tree_leaves(params) if eqx.is_inexact_array(leaf)
+    ]
+    return params if leaves else None
+
+
+def _feature_scale_from_frequency(kappa, in_size):
+    """Convert target angular frequency to an input scale for ``eqx.nn.Linear``.
+
+    Equinox initializes ``Linear(in_size, out_size)`` weights uniformly on
+    ``[-1 / sqrt(in_size), 1 / sqrt(in_size)]``, so each first-layer weight has
+    RMS magnitude ``1 / sqrt(3 * in_size)``. The paper's scale factor multiplies
+    the initialized first-layer weights; compensating for that RMS keeps
+    ``kappa`` in our API equal to the target angular frequency.
+    """
+    kappa = jnp.asarray(kappa)
+    return kappa * jnp.sqrt(3.0 * in_size)
+
+
+def _feature_mask(width_size, in_size, feature_map):
+    """Return a first-layer mask for the requested Fourier feature geometry."""
+    if feature_map == "random":
+        return jnp.ones((width_size, in_size))
+    if feature_map == "separable":
+        axis = jnp.arange(width_size) % in_size
+        return jax.nn.one_hot(axis, in_size)
+    raise ValueError("feature_map must be 'separable' or 'random'.")
+
+
+def _safe_loss_ref(loss_ref):
+    """Return a positive finite scalar suitable for loss normalization."""
+    loss_ref = jnp.asarray(loss_ref)
+    return jnp.where(
+        jnp.isfinite(loss_ref) & (loss_ref > 0),
+        loss_ref,
+        jnp.ones((), dtype=loss_ref.dtype),
+    )
 
 
 class Stage1(eqx.Module):
@@ -106,18 +166,11 @@ class Stage1(eqx.Module):
             key=key,
             **kwargs,
         )
-        if params is not None:
-            if not params_are_trainable:
-                params = non_trainable(params)
-            if not isinstance(params, _ParamContainer):
-                params = _ParamContainer(params)
-            self._params = params
+        self._params = _coerce_params(params, params_are_trainable)
 
     @property
     def params(self):
         """Params for this stage."""
-        if not hasattr(self, "_params"):
-            raise AttributeError
         return unwrap(self._params)
 
     @property
@@ -193,8 +246,10 @@ class Stage2(eqx.Module):
     epsilon : float
         Approximate magnitude of output.
     kappa : jax.Array
-        Approximate dominant frequency of output in each direction.
-        Shape (s1._mlp.in_size, )
+        Approximate angular frequency of this stage's output in normalized
+        coordinates, one value per input direction. This is converted internally
+        to the first-layer scale factor used by the sinusoidal feature map.
+        Shape (s1._mlp.in_size, ).
     width_size : int
         Size of each hidden layer.
     depth : int
@@ -217,6 +272,10 @@ class Stage2(eqx.Module):
     chebyshev : bool
         Whether the frequency ``kappa`` is associated with a Chebyshev feature
         mapping instead of Fourier. Default is False.
+    feature_map : {"separable", "random"}
+        First-layer Fourier feature geometry. ``"separable"`` assigns each
+        sinusoidal feature to one input coordinate; ``"random"`` preserves the
+        original dense random plane-wave mapping.
     kwargs : dict
         Keyword arguments to ``equinox.nn.MLP``.
 
@@ -229,6 +288,8 @@ class Stage2(eqx.Module):
     _first: eqx.nn.Linear
     _mlp: eqx.nn.MLP
     _chebyshev: bool
+    _feature_map: str
+    _feature_mask: jax.Array
 
     def __init__(
         self,
@@ -243,6 +304,7 @@ class Stage2(eqx.Module):
         key=None,
         *,
         chebyshev=False,
+        feature_map="separable",
         **kwargs,
     ):
         s1 = non_trainable(s1)
@@ -250,6 +312,10 @@ class Stage2(eqx.Module):
         self._epsilon = non_trainable(epsilon)
         self._kappa = non_trainable(jnp.asarray(kappa))
         self._chebyshev = chebyshev
+        self._feature_map = feature_map
+        self._feature_mask = non_trainable(
+            _feature_mask(width_size, s1.in_size, feature_map)
+        )
         if chebyshev:
             warnings.warn("Chebyshev setting is experimental.")
 
@@ -267,12 +333,7 @@ class Stage2(eqx.Module):
             key=key2,
             **kwargs,
         )
-        if params is not None:
-            if not params_are_trainable:
-                params = non_trainable(params)
-            if not isinstance(params, _ParamContainer):
-                params = _ParamContainer(params)
-            self._params = params
+        self._params = _coerce_params(params, params_are_trainable)
 
     @property
     def s1(self):
@@ -292,8 +353,6 @@ class Stage2(eqx.Module):
     @property
     def params(self):
         """Params for this stage."""
-        if not hasattr(self, "_params"):
-            raise AttributeError
         return unwrap(self._params)
 
     @property
@@ -332,15 +391,17 @@ class Stage2(eqx.Module):
     def compute_s2(self, *args):
         """Compute just this stage of the output."""
         x = rescale(jnp.stack(args), self.lb, self.ub)
+        feature_scale = _feature_scale_from_frequency(self.kappa, self.in_size)
+        weight = self._first.weight * unwrap(self._feature_mask)
+        bias = 0 if self._first.bias is None else self._first.bias
 
-        # TODO: Make frequency mapping separable to avoid diagonal waves.
         if self._chebyshev:
             # Ensure x ∈ (-1, 1), i.e. where arccos is differentiable.
             eps = 1 - 1e2 * jnp.finfo(jnp.array(1.0).dtype).eps
             x = jnp.clip(x, -eps, eps)
-            x = jnp.cos(self._first(self.kappa * jnp.arccos(x)))
+            x = jnp.cos(weight @ (feature_scale * jnp.arccos(x)) + bias)
         else:
-            x = jnp.sin(self._first(self.kappa * x))
+            x = jnp.sin(weight @ (feature_scale * x) + bias)
         x = self._mlp(x)
 
         if self.out_size == 1:
@@ -349,9 +410,11 @@ class Stage2(eqx.Module):
         return x
 
     def get_param(self, key, default=None):
-        """Return ``self.params["key"]`` if it exists and is not None else default."""
+        """Return this stage's parameter, or inherit it from the previous stage."""
         val = self.params.get(key, default)
-        return default if val is None else val
+        if val is not None:
+            return val
+        return self.s1.get_param(key, default)
 
     def print_params(self):
         """Print the params of this network."""
@@ -366,6 +429,8 @@ class Stage2(eqx.Module):
 
 
 def _is_multiple_or_last(step, multiple, last):
+    if multiple <= 0:
+        return step == (last - 1)
     return ((step % multiple) == 0) or (step == (last - 1))
 
 
@@ -375,6 +440,51 @@ def _fill_lask_k_buffer(last_k_loss, loss_history):
         steps = np.arange(loss_history.size - n_restore, loss_history.size)
         last_k_loss[steps % last_k_loss.size] = loss_history[-n_restore:]
     return last_k_loss
+
+
+def _restore_train_checkpoint(
+    manager,
+    step,
+    trainable,
+    opt_state,
+    return_loss_history,
+    loss_ref,
+):
+    """Restore an optimizer checkpoint, allowing older files without loss_ref."""
+    last_error = None
+    history_sizes = [step + 1, step + 2] if return_loss_history else [None]
+    for include_loss_ref in (True, False):
+        for history_size in history_sizes:
+            restored = {"trainable": trainable, "opt_state": opt_state}
+            if include_loss_ref:
+                restored["loss_ref"] = loss_ref
+            if return_loss_history:
+                restored["loss_history"] = jnp.zeros(history_size)
+            try:
+                restored = manager.restore(
+                    step, args=ocp.args.StandardRestore(restored)
+                )
+            except ValueError as err:
+                last_error = err
+                continue
+            return restored, include_loss_ref
+    raise last_error
+
+
+def _restore_trust_region_checkpoint(manager, step, trainable, loss_ref):
+    """Restore a trust-region checkpoint, allowing older files without loss_ref."""
+    last_error = None
+    for include_loss_ref in (True, False):
+        restored = {"trainable": trainable}
+        if include_loss_ref:
+            restored["loss_ref"] = loss_ref
+        try:
+            restored = manager.restore(step, args=ocp.args.StandardRestore(restored))
+        except ValueError as err:
+            last_error = err
+            continue
+        return restored, include_loss_ref
+    raise last_error
 
 
 def _train(  # noqa: C901
@@ -397,6 +507,7 @@ def _train(  # noqa: C901
     callback_every=1000,
     key=None,
     debug=False,
+    normalize_loss=True,
 ):
     """Optimize using gradient-based optimization.
 
@@ -437,6 +548,9 @@ def _train(  # noqa: C901
         Random key for sampling.
     debug : bool, optional
         Whether to print additional details for testing and debugging.
+    normalize_loss : bool, optional
+        If True, divide this stage's objective by its initial value. This keeps
+        later small-amplitude correction stages on a comparable optimizer scale.
 
     Returns
     -------
@@ -453,7 +567,10 @@ def _train(  # noqa: C901
     opt_state = optimizer.init(trainable)
 
     loss_history = []
-    last_k_loss = np.zeros(print_every)
+    print_window = max(print_every, 1)
+    last_k_loss = np.zeros(print_window)
+    loss_ref = jnp.asarray(1.0)
+    loss_ref_restored = False
 
     manager = None
     start_step = 0
@@ -463,22 +580,18 @@ def _train(  # noqa: C901
         if manager.latest_step() is not None:
             start_step = manager.latest_step()
             print(f"\n=== Resuming training from step {start_step} ===")
-            restored = {"trainable": trainable, "opt_state": opt_state}
-            if return_loss_history:
-                restored["loss_history"] = jnp.zeros(start_step + 1)
-
-            try:
-                restored = manager.restore(
-                    start_step, args=ocp.args.StandardRestore(restored)
-                )
-            except ValueError:
-                restored["loss_history"] = jnp.zeros(start_step + 2)
-                restored = manager.restore(
-                    start_step, args=ocp.args.StandardRestore(restored)
-                )
+            restored, loss_ref_restored = _restore_train_checkpoint(
+                manager,
+                start_step,
+                trainable,
+                opt_state,
+                return_loss_history,
+                loss_ref,
+            )
 
             trainable = restored["trainable"]
             opt_state = restored["opt_state"]
+            loss_ref = restored.get("loss_ref", loss_ref)
             net = eqx.combine(trainable, frozen, static)
 
             if return_loss_history:
@@ -498,17 +611,22 @@ def _train(  # noqa: C901
         print("\n----- Recombine -----")
         print(eqx.combine(trainable, frozen, static))
 
-    def loss(trainable, frozen, static, *args):
+    def raw_loss(trainable, frozen, static, *args):
         net = eqx.combine(trainable, frozen, static)
         return loss_fun(net, *args)
 
+    def loss(trainable, frozen, static, loss_ref, *args):
+        return raw_loss(trainable, frozen, static, *args) / loss_ref
+
     @partial(jit, static_argnames=["static"])
-    def make_step(trainable, frozen, static, opt_state, *args):
-        loss_value, grads = value_and_grad(loss)(trainable, frozen, static, *args)
+    def make_step(trainable, frozen, static, opt_state, loss_ref, *args):
+        loss_value, grads = value_and_grad(loss)(
+            trainable, frozen, static, loss_ref, *args
+        )
         if is_lbfgs:
 
             def loss_lbfgs(trainable):
-                return loss(trainable, frozen, static, *args)
+                return loss(trainable, frozen, static, loss_ref, *args)
 
             updates, opt_state = optimizer.update(
                 grads,
@@ -532,12 +650,30 @@ def _train(  # noqa: C901
     start_train_time = time.time()
 
     x_col = [None] * net.in_size
+    if (
+        (adaptive_sampler is not None)
+        and (adaptive_sample_freq > 0)
+        and (start_step < steps)
+    ):
+        print(f"Resampled at step {start_step}.")
+        x_col, key = adaptive_sampler(eqx.combine(trainable, frozen, static), key=key)
+
+    if not normalize_loss:
+        loss_ref = jnp.asarray(1.0)
+    elif loss_ref_restored:
+        print(f"Restored loss normalization scale: {loss_ref:.6e}.")
+    elif start_step < steps:
+        loss_ref = _safe_loss_ref(
+            raw_loss(trainable, frozen, static, *x, training_samples, *x_col)
+        )
+        print(f"Initial loss normalization scale: {loss_ref:.6e}.")
 
     for step in range(start_step, steps):
         if (
             (adaptive_sampler is not None)
+            and (adaptive_sample_freq > 0)
+            and (step > start_step)
             and (step % adaptive_sample_freq == 0)
-            and (step >= 999)
         ):
             print(f"Resampled at step {step}.")
             x_col, key = adaptive_sampler(
@@ -545,18 +681,26 @@ def _train(  # noqa: C901
             )
 
         trainable, opt_state, loss_value = make_step(
-            trainable, frozen, static, opt_state, *x, training_samples, *x_col
+            trainable,
+            frozen,
+            static,
+            opt_state,
+            loss_ref,
+            *x,
+            training_samples,
+            *x_col,
         )
 
         if return_loss_history:
             loss_history.append(loss_value)
 
-        last_k_loss[step % print_every] = loss_value
+        last_k_loss[step % print_window] = loss_value
         if _is_multiple_or_last(step, print_every, steps):
             last_k = loss_value if (step == 0) else last_k_loss.mean()
+            loss_window_name = print_every if print_every > 0 else print_window
             print(
                 f"Step {step}, Loss: {loss_value:.6e}, "
-                f"Last {print_every} mean loss: {last_k}.",
+                f"Last {loss_window_name} mean loss: {last_k}.",
                 flush=True,
             )
             net = eqx.combine(trainable, frozen, static)
@@ -566,10 +710,15 @@ def _train(  # noqa: C901
 
         if (
             manager
+            and (checkpoint_every > 0)
             and (step > start_step)
             and _is_multiple_or_last(step, checkpoint_every, steps)
         ):
-            man_args = {"trainable": trainable, "opt_state": opt_state}
+            man_args = {
+                "trainable": trainable,
+                "opt_state": opt_state,
+                "loss_ref": loss_ref,
+            }
             if len(loss_history):
                 man_args["loss_history"] = jnp.asarray(loss_history)
             manager.save(step, args=ocp.args.StandardSave(man_args))
@@ -584,6 +733,7 @@ def _train(  # noqa: C901
 
     if manager:
         manager.wait_until_finished()
+        manager.close()
 
     net = eqx.combine(trainable, frozen, static)
     return (net, loss_history) if return_loss_history else net
@@ -599,7 +749,6 @@ def _trust_region_train(  # noqa: C901
     rtol,
     atol,
     linear_solver,
-    learning_rate,
     adaptive_sampler=None,
     adaptive_sample_freq=100,
     # progress & reproducibility params
@@ -608,6 +757,7 @@ def _trust_region_train(  # noqa: C901
     callback=None,
     callback_every=100,
     key=None,
+    normalize_loss=True,
 ):
     """Optimize using a Levenberg-Marquardt nonlinear least squares solver.
 
@@ -629,8 +779,6 @@ def _trust_region_train(  # noqa: C901
         Absolute tolerance for the solver.
     linear_solver : lineax.AbstractLinearSolver
         The linear solver used to compute the Gauss-Newton step.
-    learning_rate : float
-        Stepsize/damping parameter for the solver.
     adaptive_sampler : callable, optional
         Function to generate new collocation points.
     adaptive_sample_freq : int, optional
@@ -646,6 +794,9 @@ def _trust_region_train(  # noqa: C901
         Frequency of callback execution.
     key : jax.random.PRNGKey, optional
         Random key for sampling.
+    normalize_loss : bool, optional
+        If True, scale the residual vector by the square root of its initial
+        least-squares objective for this stage.
 
     Returns
     -------
@@ -654,6 +805,8 @@ def _trust_region_train(  # noqa: C901
 
     """
     trainable, frozen, static = partition(net)
+    loss_ref = jnp.asarray(1.0)
+    loss_ref_restored = False
     solver = optimistix.LevenbergMarquardt(
         rtol=rtol,
         atol=atol,
@@ -669,18 +822,23 @@ def _trust_region_train(  # noqa: C901
         if manager.latest_step() is not None:
             start_step = manager.latest_step()
             print(f"\n=== Resuming training from step {start_step} ===")
-            restored = manager.restore(
-                start_step,
-                args=ocp.args.StandardRestore({"trainable": trainable}),
+            restored, loss_ref_restored = _restore_trust_region_checkpoint(
+                manager, start_step, trainable, loss_ref
             )
             trainable = restored["trainable"]
+            loss_ref = restored.get("loss_ref", loss_ref)
             net = eqx.combine(trainable, frozen, static)
             start_step += 1
 
-    def loss(trainable, args):
+    def raw_loss(trainable, args):
         frozen, static, *rest = args
         net = eqx.combine(trainable, frozen, static)
         return loss_fun_unreduced(net, *rest)
+
+    def loss(trainable, args):
+        loss_ref, frozen, static, *rest = args
+        raw_residual = raw_loss(trainable, (frozen, static, *rest))
+        return raw_residual / jnp.sqrt(loss_ref)
 
     print(f"--- Values at step {start_step} ---")
     net.print_params()
@@ -689,14 +847,20 @@ def _trust_region_train(  # noqa: C901
     start_train_time = time.time()
 
     x_col = [None] * net.in_size
-    step_per_opt = min(adaptive_sample_freq, checkpoint_every, steps)
-
+    step_frequencies = [steps]
+    if adaptive_sampler is not None and adaptive_sample_freq > 0:
+        step_frequencies.append(adaptive_sample_freq)
+    if checkpoint_every > 0:
+        step_frequencies.append(checkpoint_every)
+    step_per_opt = min(step_frequencies)
     for step in range(start_step, steps, step_per_opt):
+        steps_this_chunk = min(step_per_opt, steps - step)
         if (
             (adaptive_sampler is not None)
-            and (step == start_step)
+            and (adaptive_sample_freq > 0)
             and (
-                step // adaptive_sample_freq
+                step == start_step
+                or step // adaptive_sample_freq
                 > (step - step_per_opt) // adaptive_sample_freq
             )
         ):
@@ -705,12 +869,23 @@ def _trust_region_train(  # noqa: C901
                 eqx.combine(trainable, frozen, static), key=key
             )
 
+        if not normalize_loss:
+            loss_ref = jnp.asarray(1.0)
+        elif loss_ref_restored and (step == start_step):
+            print(f"Restored loss normalization scale: {loss_ref:.6e}.")
+        elif step == start_step:
+            initial_residual = raw_loss(
+                trainable, (frozen, static, *x, training_samples, *x_col)
+            )
+            loss_ref = _safe_loss_ref(jnp.sum(initial_residual**2))
+            print(f"Initial loss normalization scale: {loss_ref:.6e}.")
+
         sol = optimistix.least_squares(
             loss,
             solver,
             trainable,
-            args=(frozen, static, *x, training_samples, *x_col),
-            max_steps=step_per_opt,
+            args=(loss_ref, frozen, static, *x, training_samples, *x_col),
+            max_steps=steps_this_chunk,
             throw=False,
         )
         trainable = sol.value
@@ -721,22 +896,32 @@ def _trust_region_train(  # noqa: C901
         net = eqx.combine(trainable, frozen, static)
         net.print_params()
 
-        current_step = step + step_per_opt
-        if manager and (
-            (current_step // checkpoint_every > step // checkpoint_every)
-            or (current_step == steps)
+        current_step = step + steps_this_chunk
+        if (
+            manager
+            and (checkpoint_every > 0)
+            and (
+                (current_step // checkpoint_every > step // checkpoint_every)
+                or (current_step == steps)
+            )
         ):
             manager.save(
                 current_step,
-                args=ocp.args.StandardSave({"trainable": trainable}),
+                args=ocp.args.StandardSave(
+                    {"trainable": trainable, "loss_ref": loss_ref}
+                ),
             )
 
-        if callback and (
-            (current_step // callback_every > step // callback_every)
-            or (current_step == steps)
+        if (
+            callback
+            and (callback_every > 0)
+            and (
+                (current_step // callback_every > step // callback_every)
+                or (current_step == steps)
+            )
         ):
             current_net = eqx.combine(trainable, frozen, static)
-            callback(current_net, step)
+            callback(current_net, current_step)
 
     end_train_time = time.time()
     print("--- Finished training ---\n")
@@ -744,6 +929,7 @@ def _trust_region_train(  # noqa: C901
 
     if manager:
         manager.wait_until_finished()
+        manager.close()
 
     net = eqx.combine(trainable, frozen, static)
     return net
@@ -770,7 +956,9 @@ def multistage_train(
     order=(1,),
     beta_fun=None,
     heuristic=0.9,
+    frequency_estimator="spectral",
     chebyshev=False,
+    feature_map="separable",
     x_stage2=None,
     training_samples_stage2=None,
     # progress & reproducibility params
@@ -782,6 +970,7 @@ def multistage_train(
     checkpoint_dir="checkpoints",
     checkpoint_every=5000,
     benchmark_state=None,
+    normalize_loss=True,
     **adaptive_sample_kwargs,
 ):
     """Multi-stage training.
@@ -825,14 +1014,23 @@ def multistage_train(
     num_samples_for_epsilon : tuple, optional
         Number of samples used to estimate error statistics between stages.
     order : tuple, optional
-        Order of error estimation.
+        Derivative orders used for error estimation. A 1D tuple is interpreted
+        as separate operator terms in each input direction; pass nested
+        multi-indices for mixed derivative terms.
     beta_fun : callable, optional
-        Function defining the beta distribution for error bounds.
+        Function defining scalar or per-operator-term coefficients for the
+        error estimate.
     heuristic : float, optional
         Heuristic multiplier for error estimation. Default is 0.9.
+        Used only when ``frequency_estimator="zero_crossing"``.
+    frequency_estimator : {"spectral", "zero_crossing"}
+        Fourier residual frequency estimator used between stages.
     chebyshev : bool
         Whether to use Chebyshev feature mapping instead of Fourier.
         If given, ``heuristic`` is ignored.
+    feature_map : {"separable", "random"}
+        First-layer feature geometry for new stages. ``"separable"`` is the
+        default; ``"random"`` preserves the previous dense plane-wave mapping.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
@@ -854,6 +1052,8 @@ def multistage_train(
     benchmark_state : callable, optional
         Callback for external benchmarking or logging. Signature:
         ``benchmark_state(net,stage,name,step=step)``.
+    normalize_loss : bool, optional
+        Whether to normalize each stage's objective by its initial value.
 
     Returns
     -------
@@ -868,12 +1068,12 @@ def multistage_train(
         key = jax.random.PRNGKey(42)
     if net_kwargs_for_save is None:
         net_kwargs_for_save = {}
-    if training_samples_stage2 is None:
+    if x_stage2 is None:
         x_stage2 = x
+    if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
 
-    adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
-    adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
+    adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
     residual_fun = residual_fun_s1
     loss_fun = loss_fun_s1
@@ -887,15 +1087,19 @@ def multistage_train(
                 benchmark_state(n, stage, name, step=s)
 
         if adaptive_sample_freq > 0:
+            stage_adaptive_sample_kwargs = dict(adaptive_sample_kwargs_base)
+            stage_adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
+            stage_adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
             adaptive_sampler = partial(
                 adaptive_sample,
                 residual_fun=residual_fun,
                 in_size=net.in_size,
-                **adaptive_sample_kwargs,
+                **stage_adaptive_sample_kwargs,
             )
         else:
             adaptive_sampler = None
 
+        key, train_key = jax.random.split(key)
         net = _train(
             net=net,
             loss_fun=loss_fun,
@@ -911,6 +1115,8 @@ def multistage_train(
             checkpoint_path=os.path.join(checkpoint_dir, f"{name}_stage_{stage}"),
             checkpoint_every=checkpoint_every,
             callback=current_callback,
+            key=train_key,
+            normalize_loss=normalize_loss,
         )
         if return_loss_history:
             net, loss_history = net
@@ -932,18 +1138,21 @@ def multistage_train(
             num_samples_for_epsilon,
             order,
             beta_fun,
-            **({} if chebyshev else {"heuristic": heuristic}),
+            **(
+                {}
+                if chebyshev
+                else {
+                    "heuristic": heuristic,
+                    "frequency_estimator": frequency_estimator,
+                }
+            ),
         )
         print(f"Stage {stage} statistics:")
         print(f"RMS residual estimate used for stage {stage +1} is {eps_residual}.")
         print(f"RMS prediction residual used for stage {stage +1} is {eps_prediction}.")
         print(f"Estimate frequency kappa used for stage {stage +1} is {kappa}.")
 
-        params = getattr(net, "_params", None)
-        if params is not None:
-            params = eqx.filter(
-                params, is_not_trainable, inverse=True, is_leaf=is_not_trainable
-            )
+        params = _trainable_params_or_none(getattr(net, "_params", None))
 
         key, subkey = jax.random.split(key)
         net_kwargs_for_save = dict(
@@ -953,6 +1162,7 @@ def multistage_train(
             depth=depth,
             params_are_trainable=params is not None,
             chebyshev=chebyshev,
+            feature_map=feature_map,
         )
         net = Stage2(
             net, params=params, key=subkey, activation=activation, **net_kwargs_for_save
@@ -995,7 +1205,9 @@ def multistage_trust_region_train(
     order=(1,),
     beta_fun=None,
     heuristic=0.9,
+    frequency_estimator="spectral",
     chebyshev=False,
+    feature_map="separable",
     x_stage2=None,
     training_samples_stage2=None,
     # Progress & reproducibility params
@@ -1006,6 +1218,7 @@ def multistage_trust_region_train(
     checkpoint_dir="checkpoints",
     checkpoint_every=100,
     benchmark_state=None,
+    normalize_loss=True,
     **adaptive_sample_kwargs,
 ):
     """Multi-stage training using trust region based optimization.
@@ -1054,8 +1267,9 @@ def multistage_trust_region_train(
         Default is QR for first stage and conjugate gradient on the normal
         equations for following stages.
     learning_rate : float, optional
-        The initial damping parameter (step size) for the Levenberg-Marquardt
-        algorithm.
+        Learning rate passed to the LBFGS warmup optimizer. The
+        Levenberg-Marquardt phase is controlled by ``rtol``, ``atol``, and
+        ``linear_solver``.
     adaptive_sample_freq : int, optional
         Frequency of adaptive sampling during training with trust region method.
         Default is 100. LBFGS warmup steps will adaptive sample with
@@ -1071,14 +1285,23 @@ def multistage_trust_region_train(
     num_samples_for_epsilon : tuple, optional
         Number of samples used to estimate error statistics between stages.
     order : tuple, optional
-        Order of error estimation.
+        Derivative orders used for error estimation. A 1D tuple is interpreted
+        as separate operator terms in each input direction; pass nested
+        multi-indices for mixed derivative terms.
     beta_fun : callable, optional
-        Function defining the beta distribution for error bounds.
+        Function defining scalar or per-operator-term coefficients for the
+        error estimate.
     heuristic : float, optional
         Heuristic multiplier for error estimation. Default is 0.9.
+        Used only when ``frequency_estimator="zero_crossing"``.
+    frequency_estimator : {"spectral", "zero_crossing"}
+        Fourier residual frequency estimator used between stages.
     chebyshev : bool
         Whether to use Chebyshev feature mapping instead of Fourier.
         If given, ``heuristic`` is ignored.
+    feature_map : {"separable", "random"}
+        First-layer feature geometry for new stages. ``"separable"`` is the
+        default; ``"random"`` preserves the previous dense plane-wave mapping.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
@@ -1099,6 +1322,8 @@ def multistage_trust_region_train(
     benchmark_state : callable, optional
         Callback for external benchmarking or logging. Signature:
         ``benchmark_state(net,stage,name,step=step)``.
+    normalize_loss : bool, optional
+        Whether to normalize each stage's objective by its initial value.
 
     Returns
     -------
@@ -1110,12 +1335,12 @@ def multistage_trust_region_train(
         key = jax.random.PRNGKey(42)
     if net_kwargs_for_save is None:
         net_kwargs_for_save = {}
-    if training_samples_stage2 is None:
+    if x_stage2 is None:
         x_stage2 = x
+    if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
 
-    adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
-    adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
+    adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
     residual_fun = residual_fun_s1
     loss_fun = loss_fun_s1
@@ -1130,15 +1355,19 @@ def multistage_trust_region_train(
                 benchmark_state(n, stage, name, step=s)
 
         if adaptive_sample_freq > 0:
+            stage_adaptive_sample_kwargs = dict(adaptive_sample_kwargs_base)
+            stage_adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
+            stage_adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
             adaptive_sampler = partial(
                 adaptive_sample,
                 residual_fun=residual_fun,
                 in_size=net.in_size,
-                **adaptive_sample_kwargs,
+                **stage_adaptive_sample_kwargs,
             )
         else:
             adaptive_sampler = None
 
+        key, train_key = jax.random.split(key)
         net, _ = _train(
             net=net,
             loss_fun=loss_fun,
@@ -1156,8 +1385,11 @@ def multistage_trust_region_train(
             ),
             checkpoint_every=checkpoint_every * 10,
             callback=current_callback,
+            key=train_key,
+            normalize_loss=normalize_loss,
         )
 
+        key, train_key = jax.random.split(key)
         net = _trust_region_train(
             net=net,
             loss_fun_unreduced=loss_fun_unreduced,
@@ -1167,12 +1399,13 @@ def multistage_trust_region_train(
             rtol=rtol,
             atol=atol,
             linear_solver=linear_solver,
-            learning_rate=learning_rate,
             adaptive_sampler=adaptive_sampler,
             adaptive_sample_freq=adaptive_sample_freq,
             checkpoint_path=os.path.join(checkpoint_dir, f"{name}_stage_{stage}"),
             checkpoint_every=checkpoint_every,
             callback=current_callback,
+            key=train_key,
+            normalize_loss=normalize_loss,
         )
 
         linear_solver = linear_solver_next
@@ -1196,18 +1429,21 @@ def multistage_trust_region_train(
             num_samples_for_epsilon,
             order,
             beta_fun,
-            **({} if chebyshev else {"heuristic": heuristic}),
+            **(
+                {}
+                if chebyshev
+                else {
+                    "heuristic": heuristic,
+                    "frequency_estimator": frequency_estimator,
+                }
+            ),
         )
         print(f"Stage {stage} statistics:")
         print(f"RMS residual estimate used for stage {stage +1} is {eps_residual}.")
         print(f"RMS prediction residual used for stage {stage +1} is {eps_prediction}.")
         print(f"Estimate frequency kappa used for stage {stage +1} is {kappa}.")
 
-        params = getattr(net, "_params", None)
-        if params is not None:
-            params = eqx.filter(
-                params, is_not_trainable, inverse=True, is_leaf=is_not_trainable
-            )
+        params = _trainable_params_or_none(getattr(net, "_params", None))
 
         key, subkey = jax.random.split(key)
         net_kwargs_for_save = dict(
@@ -1217,6 +1453,7 @@ def multistage_trust_region_train(
             depth=depth,
             params_are_trainable=params is not None,
             chebyshev=chebyshev,
+            feature_map=feature_map,
         )
         net = Stage2(
             net, params=params, key=subkey, activation=activation, **net_kwargs_for_save

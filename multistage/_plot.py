@@ -176,13 +176,22 @@ def plot_loss(checkpoint_path, figname, title="Loss"):
     loss = np.array([])
     for i, path in enumerate(checkpoint_path):
         manager = checkpoint_manager(path, create=False)
-        step = manager.latest_step()
         try:
-            logger.setLevel(logging.ERROR)
-            restored = manager.restore(step, args=ocp_args)
+            step = manager.latest_step()
+            if step is None:
+                continue
+            try:
+                logger.setLevel(logging.ERROR)
+                restored = manager.restore(step, args=ocp_args)
+            finally:
+                logger.setLevel(level)
         finally:
-            logger.setLevel(level)
+            manager.close()
+        if "loss_history" not in restored:
+            continue
         restored = np.asarray(restored["loss_history"])
+        if restored.size == 0:
+            continue
         loss = np.concatenate((loss, restored))
 
         min_line_y = 0.9 * restored.min()
@@ -195,12 +204,17 @@ def plot_loss(checkpoint_path, figname, title="Loss"):
             label=rf"${coeff} \times 10^{{{int(expo)}}}$",
         )
 
-    ax.plot(loss, label="Training Loss", linewidth=2)
-    ax.set_yscale("log")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Loss")
+    if loss.size:
+        ax.plot(loss, label="Training Loss", linewidth=2)
+        ax.set_yscale("log")
+        ax.set_xlabel("Step")
+        ax.set_ylabel("Loss")
+    else:
+        ax.text(0.5, 0.5, "No loss history found", ha="center", va="center")
+        ax.set_axis_off()
     ax.set_title(title)
-    ax.legend()
+    if ax.has_data():
+        ax.legend()
     fig.savefig(figname)
     plt.close(fig)
 
