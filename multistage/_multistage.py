@@ -984,7 +984,7 @@ def multistage_trust_region_train(
     atol=1e-8,
     rtol_decay_factor=0.7,
     atol_decay_factor=0.1,
-    linear_solver=(lx.QR(), lx.NormalCG(rtol=1e-7, atol=1e-7)),
+    linear_solver=(lx.QR(), lx.Normal(lx.CG(rtol=1e-7, atol=1e-7))),
     learning_rate=None,
     adaptive_sample_freq=100,
     n_stages=2,
