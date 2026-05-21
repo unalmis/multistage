@@ -5,6 +5,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import numpy as np
 import optax
 from jax import config, grad, vmap
 from optax import squared_error
@@ -96,15 +97,13 @@ def loss_s1_burgers(model, t_data, x_data, u_data, t_col=None, x_col=None, gamma
     """
     u_pred, f_pred = residual_s1_burgers(model, t_data, x_data)
     loss_data = squared_error(u_pred, u_data).mean()
-    loss_resid = squared_error(f_pred).mean()
+    loss_resid = f_pred.ravel()
 
     if t_col is not None and x_col is not None:
         _, col_resid = residual_s1_burgers(model, t_col, x_col)
-        col_resid = squared_error(col_resid).mean()
-    else:
-        col_resid = 0
+        loss_resid = jnp.concatenate((loss_resid, col_resid.ravel()))
 
-    return (1 - gamma) * loss_data + gamma * (loss_resid + col_resid)
+    return (1 - gamma) * loss_data + gamma * squared_error(loss_resid).mean()
 
 
 def loss_s1_burgers_unreduced(
@@ -154,13 +153,6 @@ u_x_s2 = grad(u_fn_s2, argnums=2)
 u_xx_s2 = grad(grad(u_fn_s2, argnums=2), argnums=2)
 
 
-@partial(grad, argnums=2)
-def _u_prod_x(model, t, x):
-    # valid for stage 2; trivial to add other combinations for stage 2,
-    # but those are of order epsilon^2 anyway.
-    return model.s1(t, x) * model.compute_s2(t, x)
-
-
 @partial(vmap, in_axes=(None, 0, 0))
 def residual_s2_burgers(model, t, x):
     """Calculates the PDE residual for the Stage 2 model.
@@ -186,33 +178,131 @@ def residual_s2_burgers(model, t, x):
     uxx = u_xx_s2(model, t, x)
     lam_1, lam_2 = total_lambdas(model)
     f = ut + lam_1 * u * ux - lam_2 * uxx
-    f = f + model.epsilon * lam_1 * _u_prod_x(model, t, x)
     return u, f
 
 
 def total_lambdas(model):
 
-    epsilons = [model.epsilon]
-    lams_1 = [model.get_param("lambda_1", 0.0)]
-    lams_2 = [jnp.exp(model.get_param("log_lambda_2", -jnp.inf))]
-    s1 = model
-    while hasattr(s1, "s1"):
-        s1 = s1.s1
-        lams_1.append(s1.get_param("lambda_1", 0.0))
-        lams_2.append(jnp.exp(s1.get_param("log_lambda_2", -jnp.inf)))
-        epsilons.append(s1.epsilon)
-
-    lam_1 = 0.0
-    lam_2 = 0.0
-    for i in range(len(epsilons)):
-        lam_1 += epsilons[i] * lams_1[i]
-        lam_2 += epsilons[i] * lams_2[i]
+    current = model
+    while True:
+        lam_1 = current.get_param("lambda_1", None)
+        log_lam_2 = current.get_param("log_lambda_2", None)
+        if (lam_1 is not None) or (log_lam_2 is not None):
+            lam_1 = 0.0 if lam_1 is None else lam_1
+            lam_2 = 0.0 if log_lam_2 is None else jnp.exp(log_lam_2)
+            break
+        if not hasattr(current, "s1"):
+            lam_1 = 0.0
+            lam_2 = 0.0
+            break
+        current = current.s1
 
     if hasattr(lam_1, "size"):
         lam_1 = lam_1[0]
     if hasattr(lam_2, "size"):
         lam_2 = lam_2[0]
     return lam_1, lam_2
+
+
+def test_total_lambdas_for_forward_and_inverse_stages():
+    """Forward params stay fixed; inverse params are latest total estimates."""
+    lb_test = jnp.array([0.0, -1.0])
+    ub_test = jnp.array([1.0, 1.0])
+    s1 = Stage1(
+        lb_test,
+        ub_test,
+        in_size=2,
+        out_size=1,
+        params={
+            "lambda_1": jnp.array([1.0]),
+            "log_lambda_2": jnp.log(jnp.array([0.25])),
+        },
+        params_are_trainable=False,
+    )
+    s2 = Stage2(s1, epsilon=1e-3, kappa=jnp.array([2.0, 3.0]))
+    lam_1, lam_2 = total_lambdas(s2)
+    assert jnp.allclose(lam_1, 1.0)
+    assert jnp.allclose(lam_2, 0.25)
+
+    s2_inverse = Stage2(
+        s1,
+        epsilon=1e-3,
+        kappa=jnp.array([2.0, 3.0]),
+        params={
+            "lambda_1": jnp.array([2.0]),
+            "log_lambda_2": jnp.log(jnp.array([0.5])),
+        },
+        params_are_trainable=True,
+    )
+    lam_1, lam_2 = total_lambdas(s2_inverse)
+    assert jnp.allclose(lam_1, 2.0)
+    assert jnp.allclose(lam_2, 0.5)
+
+
+def beta_burgers(model, t, x):
+    """Coefficients of u_t, u, u_x, and u_xx in the linearized operator."""
+    lam_1, lam_2 = total_lambdas(model)
+    ones = jnp.ones_like(t)
+    u = vmap(model)(t, x)
+
+    def u_at(ti, xi):
+        return model(ti, xi)
+
+    ux = vmap(grad(u_at, argnums=1))(t, x)
+    return jnp.stack([ones, lam_1 * ux, lam_1 * u, lam_2 * ones], axis=-1)
+
+
+def test_linear_burgers_exact_solution_residual():
+    """The synthetic forward-problem data should satisfy the stated PDE."""
+    lambda_2 = 0.5 / jnp.pi
+    t = jnp.linspace(0.0, 1.0, 9)
+    x = jnp.linspace(-1.0, 1.0, 9)
+
+    @vmap
+    def exact(ti, xi):
+        return jnp.sin(jnp.pi * xi) * jnp.exp(-lambda_2 * jnp.pi**2 * ti)
+
+    u = exact(t, x)
+    ut = -lambda_2 * jnp.pi**2 * u
+    uxx = -jnp.pi**2 * u
+    np.testing.assert_allclose(ut - lambda_2 * uxx, 0.0, atol=1e-14)
+
+
+def test_scalar_and_unreduced_losses_match_with_collocation_points():
+    """Trust-region and scalar optimizers should see the same objective."""
+    key = jax.random.PRNGKey(0)
+    model = Stage1(
+        lb,
+        ub,
+        in_size=2,
+        out_size=1,
+        width_size=4,
+        depth=2,
+        params={
+            "lambda_1": jnp.array([0.0]),
+            "log_lambda_2": jnp.log(jnp.array([0.5 / jnp.pi])),
+        },
+        key=key,
+    )
+    t_data = jnp.array([0.0, 0.3, 0.8])
+    x_data = jnp.array([-1.0, -0.1, 0.7])
+    u_data = jnp.array([0.0, 0.2, -0.4])
+    t_col = jnp.array([0.2, 0.9])
+    x_col = jnp.array([-0.6, 0.4])
+    gamma = 0.3
+
+    scalar = loss_s1_burgers(model, t_data, x_data, u_data, t_col, x_col, gamma)
+    unreduced = loss_s1_burgers_unreduced(
+        model, t_data, x_data, u_data, t_col, x_col, gamma
+    )
+    np.testing.assert_allclose(scalar, jnp.sum(unreduced**2), rtol=1e-12)
+
+    stage2 = Stage2(model, epsilon=0.01, kappa=jnp.array([2.0, 3.0]), key=key)
+    scalar = loss_s2_burgers(stage2, t_data, x_data, u_data, t_col, x_col, gamma)
+    unreduced = loss_s2_burgers_unreduced(
+        stage2, t_data, x_data, u_data, t_col, x_col, gamma
+    )
+    np.testing.assert_allclose(scalar, jnp.sum(unreduced**2), rtol=1e-12)
 
 
 def loss_s2_burgers(model, t_data, x_data, u_data, t_col=None, x_col=None, gamma=0.5):
@@ -241,15 +331,13 @@ def loss_s2_burgers(model, t_data, x_data, u_data, t_col=None, x_col=None, gamma
     """
     u_pred, f_pred = residual_s2_burgers(model, t_data, x_data)
     loss_data = squared_error(u_pred, u_data).mean()
-    loss_resid = squared_error(f_pred).mean()
+    loss_resid = f_pred.ravel()
 
     if t_col is not None and x_col is not None:
         _, col_resid = residual_s2_burgers(model, t_col, x_col)
-        col_resid = squared_error(col_resid).mean()
-    else:
-        col_resid = 0
+        loss_resid = jnp.concatenate((loss_resid, col_resid.ravel()))
 
-    return (1 - gamma) * loss_data + gamma * (loss_resid + col_resid)
+    return (1 - gamma) * loss_data + gamma * squared_error(loss_resid).mean()
 
 
 def loss_s2_burgers_unreduced(
@@ -344,6 +432,7 @@ def run_burgers(
     chebyshev=False,
     name="burgers/lbfgs/10k_pts_20k_stps_3layers",
     normal_sample=False,
+    normal_sample_scale=0.1,
     **net_kwargs,
 ):
     """Test Burgers inverse problem optimization.
@@ -379,6 +468,8 @@ def run_burgers(
         Name for the run, used for saving files and benchmarks.
     normal_sample : bool
         Whether to sample additional points from normal distribution around x = 0.
+    normal_sample_scale : float
+        Standard deviation for additional points around x = 0.
     net_kwargs : dict
         Network hyperparameters for initial Stage1 network.
 
@@ -403,7 +494,7 @@ def run_burgers(
             u_true,
             axis=1,
             center=0.0,
-            scale=LAMBDA_1,
+            scale=normal_sample_scale,
             key=key,
         )
         x = jnp.concatenate([jnp.stack(x), x_conc], axis=1)
@@ -423,7 +514,7 @@ def run_burgers(
             u_true,
             axis=1,
             center=0.0,
-            scale=LAMBDA_1,
+            scale=normal_sample_scale,
             key=key,
         )
         x_train_stage2 = jnp.concatenate(
@@ -459,7 +550,7 @@ def run_burgers(
 
     adaptive_sample_kwargs = {
         "center": 0.0,
-        "scale": LAMBDA_1,
+        "scale": normal_sample_scale,
         "normal_sample": (False, normal_sample),
     }
     if optimizer == "trust region":
@@ -478,7 +569,8 @@ def run_burgers(
             learning_rate=learning_rate,
             adaptive_sample_freq=adaptive_sample_freq,
             n_stages=n_stages,
-            order=(1, 2),
+            order=((1, 0), (0, 0), (0, 1), (0, 2)),
+            beta_fun=beta_burgers,
             chebyshev=chebyshev,
             x_stage2=x_train_stage2,
             training_samples_stage2=u_data_train_stage2,
@@ -507,7 +599,8 @@ def run_burgers(
             learning_rate=learning_rate,
             adaptive_sample_freq=adaptive_sample_freq,
             n_stages=n_stages,
-            order=(1, 2),
+            order=((1, 0), (0, 0), (0, 1), (0, 2)),
+            beta_fun=beta_burgers,
             chebyshev=chebyshev,
             x_stage2=x_train_stage2,
             training_samples_stage2=u_data_train_stage2,

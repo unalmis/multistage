@@ -5,6 +5,7 @@ import functools
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from interpax_fft import cheb_from_dct, cheb_pts
 from jax import jit, vmap
 from jax.scipy.fft import dct
@@ -156,7 +157,7 @@ def adaptive_sample(
     c : float, optional
         Hyperparameter for 'probabilistic' mode. Controls the flatness of the
         distribution (higher c adds more uniform randomness). Default is 0.0.
-    normal_sample : list[bool]
+    normal_sample : bool or list[bool]
         Whether to sample additional points from normal distribution around x = 0.
 
     Returns
@@ -169,24 +170,32 @@ def adaptive_sample(
     """
     if key is None:
         key = jax.random.PRNGKey(0)
+    if isinstance(normal_sample, bool):
+        normal_sample = (normal_sample,) * in_size
+    elif len(normal_sample) != in_size:
+        raise ValueError("normal_sample must be a bool or have length in_size.")
+    if n_selected > n_candidates:
+        raise ValueError("n_selected must be less than or equal to n_candidates.")
 
     lb, ub = net.lb, net.ub
 
-    keys = jax.random.split(key, in_size + 2)
+    keys = jax.random.split(key, 2 * in_size + 2)
+    uniform_keys = keys[:in_size]
+    normal_keys = keys[in_size : 2 * in_size]
     x_candidates = []
     for i in range(in_size):
         if normal_sample[i]:
             num_1 = n_candidates // 2
-            num_2 = int(jnp.ceil(n_candidates / 2))
+            num_2 = n_candidates - num_1
         else:
             num_1 = n_candidates
-        x_i = jax.random.uniform(keys[i], (num_1,), minval=lb[i], maxval=ub[i])
+        x_i = jax.random.uniform(uniform_keys[i], (num_1,), minval=lb[i], maxval=ub[i])
         if normal_sample[i]:
             x_i = jnp.concatenate(
                 [
                     x_i,
                     jnp.clip(
-                        center + scale * jax.random.normal(keys[i], (num_2,)),
+                        center + scale * jax.random.normal(normal_keys[i], (num_2,)),
                         lb[i],
                         ub[i],
                     ),
@@ -195,7 +204,12 @@ def adaptive_sample(
         x_candidates.append(x_i)
 
     _, residuals = residual_fun(net, *x_candidates)
-    residuals = jnp.abs(residuals)
+    residuals = jnp.asarray(residuals)
+    if residuals.ndim > 1:
+        residuals = residuals.reshape((residuals.shape[0], -1))
+        residuals = jnp.linalg.norm(residuals, axis=1)
+    else:
+        residuals = jnp.abs(residuals)
 
     if mode == "top_k":
         _, top_indices = jax.lax.top_k(residuals, n_selected)
@@ -208,7 +222,7 @@ def adaptive_sample(
         probs = weights / jnp.sum(weights)
         top_indices = jax.random.choice(
             keys[-2],
-            jnp.arange(n_candidates),
+            jnp.arange(residuals.shape[0]),
             shape=(n_selected,),
             p=probs,
             replace=False,
@@ -287,6 +301,62 @@ def count_params(model):
     return count
 
 
+def _operator_orders(order, in_size):
+    """Return derivative multi-indices for terms in the linearized operator."""
+    order = np.asarray(order, dtype=int)
+    if order.ndim == 0:
+        order = np.asarray([order.item()])
+
+    if order.ndim == 1:
+        if order.size == 1:
+            if in_size == 1:
+                order = order.reshape(1, 1)
+            else:
+                order = np.eye(in_size, dtype=int) * order.item()
+        elif order.size == in_size:
+            order = np.diag(order)
+        else:
+            raise ValueError("1D order must have length 1 or in_size.")
+    elif order.ndim == 2:
+        if order.shape[1] != in_size:
+            raise ValueError("2D order must have shape (num_terms, in_size).")
+    else:
+        raise ValueError("order must be a scalar, vector, or matrix of multi-indices.")
+
+    return jnp.asarray(order)
+
+
+def _beta_rms(beta, num_terms):
+    """Return scalar or per-operator-term RMS coefficient magnitudes."""
+    beta = jnp.asarray(beta)
+    if beta.ndim > 0 and beta.shape[-1] == num_terms:
+        beta = beta.reshape((-1, num_terms))
+        return jnp.sqrt(jnp.square(beta).mean(axis=0))
+    return jnp.sqrt(jnp.square(beta).mean())
+
+
+def _operator_scale(kappa, lb, ub, order, beta=1.0):
+    """Estimate the dominant derivative amplification for operator terms.
+
+    ``kappa`` is the angular frequency in normalized coordinates. PDE residuals
+    are evaluated in physical coordinates, so each derivative contributes the
+    chain-rule factor ``2 / (ub - lb)``. The multistage estimate balances the
+    PDE residual against the dominant term in the linearized operator.
+    """
+    kappa = jnp.asarray(kappa)
+    lb = jnp.asarray(lb)
+    ub = jnp.asarray(ub)
+    physical_kappa = jnp.abs(2.0 * kappa / (ub - lb))
+    orders = _operator_orders(order, kappa.size)
+    term_scales = jnp.prod(physical_kappa[None, :] ** orders, axis=1)
+    beta = jnp.asarray(beta)
+    if beta.ndim > 0:
+        if beta.shape[-1] != term_scales.size:
+            raise ValueError("per-term beta must have one value per operator term.")
+        return jnp.max(jnp.abs(beta) * term_scales)
+    return jnp.abs(beta) * jnp.max(term_scales)
+
+
 @functools.partial(
     jit,
     static_argnames=[
@@ -321,12 +391,14 @@ def stats(
         Number of samples in each direction.
         Default is 1024.
         Note that kappa will be at most half this value.
-    order : tuple[int]
-        Highest order derivative in the PDE solved by ``self.net`` in each direction.
-        Default is one.
+    order : tuple[int] or tuple[tuple[int]]
+        Derivative orders in the dominant linearized PDE operator. A 1D tuple is
+        interpreted as separate terms in each input direction; pass nested
+        multi-indices for mixed derivative terms.
     beta_fun : callable
-        Function to compute derivative of network wrt highest order
-        derivative of output.
+        Function to compute coefficient magnitudes for the derivative terms.
+        It may return a scalar coefficient or an array whose last axis has one
+        coefficient per operator term.
     heuristic : float
         The factor should be the best guess <= 1 such that
         dominant frequency = max frequency * heuristic
@@ -358,7 +430,7 @@ def stats(
         beta = 1
     else:
         beta = beta_fun(net, *mesh)
-        beta = jnp.sqrt(squared_error(beta).mean())
+        beta = _beta_rms(beta, _operator_orders(order, in_size).shape[0])
 
     f = f.reshape(*num_samples, out_size)
 
@@ -379,8 +451,8 @@ def stats(
     assert cross_count.shape == (in_size,)
     kappa = jnp.floor(heuristic * jnp.pi * cross_count / 2 + 1)
 
-    order = jnp.asarray(order)
-    eps_prediction = eps_residual / (beta * jnp.prod(kappa**order))
+    operator_scale = _operator_scale(kappa, lb, ub, order, beta=beta)
+    eps_prediction = eps_residual / operator_scale
     return eps_residual, eps_prediction, kappa
 
 
@@ -409,12 +481,14 @@ def stats_chebyshev(
     num_samples : tuple[int]
         Number of samples in each direction.
         Default is 1024.
-    order : tuple[int]
-        Highest order derivative in the PDE solved by ``self.net`` in each direction.
-        Default is one.
+    order : tuple[int] or tuple[tuple[int]]
+        Derivative orders in the dominant linearized PDE operator. A 1D tuple is
+        interpreted as separate terms in each input direction; pass nested
+        multi-indices for mixed derivative terms.
     beta_fun : callable
-        Function to compute derivative of network wrt highest order
-        derivative of output.
+        Function to compute coefficient magnitudes for the derivative terms.
+        It may return a scalar coefficient or an array whose last axis has one
+        coefficient per operator term.
 
     Returns
     -------
@@ -443,7 +517,7 @@ def stats_chebyshev(
         beta = 1
     else:
         beta = beta_fun(net, *mesh)
-        beta = jnp.sqrt(squared_error(beta).mean())
+        beta = _beta_rms(beta, _operator_orders(order, in_size).shape[0])
 
     f = f.reshape(*num_samples, out_size)
 
@@ -457,8 +531,8 @@ def stats_chebyshev(
 
     kappa = jnp.asarray([compute_freq(i) for i in range(in_size)])
     assert kappa.shape == (in_size,)
-    kappa = jnp.floor(kappa)
-    order = jnp.asarray(order)
+    kappa = jnp.maximum(jnp.floor(kappa), 1)
     # this is a heuristic anyway
-    eps_prediction = eps_residual / (beta * jnp.prod(kappa**order))
+    operator_scale = _operator_scale(kappa, lb, ub, order, beta=beta)
+    eps_prediction = eps_residual / operator_scale
     return eps_residual, eps_prediction, kappa
