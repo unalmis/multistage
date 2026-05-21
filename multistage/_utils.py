@@ -365,6 +365,7 @@ def _spectral_peak_frequency(f, num_samples):
     """
 
     def compute_freq(i):
+        # this will have aliasing error for non-periodic functions of course
         spectrum = 2.0 * jnp.fft.rfft(f, axis=i, norm="forward")
         spectrum = jnp.moveaxis(spectrum, i, 0)
         spectrum = spectrum.at[0].divide(2.0)
@@ -566,7 +567,9 @@ def stats_chebyshev(
     # the domain and isotropic in the codomain.
     def compute_freq(i):
         cheb = cheb_from_dct(dct(f, type=2, axis=i), i)
-        return jnp.argmax(jnp.abs(cheb), axis=i).mean()
+        cheb = jnp.moveaxis(cheb, i, 0)
+        cheb = cheb.at[0].set(0.0)
+        return jnp.argmax(jnp.abs(cheb), axis=0).mean()
 
     kappa = jnp.asarray([compute_freq(i) for i in range(in_size)])
     assert kappa.shape == (in_size,)

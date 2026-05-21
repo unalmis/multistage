@@ -20,6 +20,8 @@ jobs:
   unit_tests:
 
     runs-on: ubuntu-latest
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13']
@@ -50,10 +52,10 @@ jobs:
             ./prof.db
       - name: Upload coverage
         id : codecov
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && env.CODECOV_TOKEN != ''
         uses: codecov/codecov-action@v6
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ env.CODECOV_TOKEN }}
           name: codecov-umbrella
           files: ./cov.xml
           fail_ci_if_error: true

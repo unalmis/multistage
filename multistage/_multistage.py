@@ -440,6 +440,51 @@ def _fill_lask_k_buffer(last_k_loss, loss_history):
     return last_k_loss
 
 
+def _restore_train_checkpoint(
+    manager,
+    step,
+    trainable,
+    opt_state,
+    return_loss_history,
+    loss_ref,
+):
+    """Restore an optimizer checkpoint, allowing older files without loss_ref."""
+    last_error = None
+    history_sizes = [step + 1, step + 2] if return_loss_history else [None]
+    for include_loss_ref in (True, False):
+        for history_size in history_sizes:
+            restored = {"trainable": trainable, "opt_state": opt_state}
+            if include_loss_ref:
+                restored["loss_ref"] = loss_ref
+            if return_loss_history:
+                restored["loss_history"] = jnp.zeros(history_size)
+            try:
+                restored = manager.restore(
+                    step, args=ocp.args.StandardRestore(restored)
+                )
+            except ValueError as err:
+                last_error = err
+                continue
+            return restored, include_loss_ref
+    raise last_error
+
+
+def _restore_trust_region_checkpoint(manager, step, trainable, loss_ref):
+    """Restore a trust-region checkpoint, allowing older files without loss_ref."""
+    last_error = None
+    for include_loss_ref in (True, False):
+        restored = {"trainable": trainable}
+        if include_loss_ref:
+            restored["loss_ref"] = loss_ref
+        try:
+            restored = manager.restore(step, args=ocp.args.StandardRestore(restored))
+        except ValueError as err:
+            last_error = err
+            continue
+        return restored, include_loss_ref
+    raise last_error
+
+
 def _train(  # noqa: C901
     net,
     loss_fun,
@@ -522,6 +567,8 @@ def _train(  # noqa: C901
     loss_history = []
     print_window = max(print_every, 1)
     last_k_loss = np.zeros(print_window)
+    loss_ref = jnp.asarray(1.0)
+    loss_ref_restored = False
 
     manager = None
     start_step = 0
@@ -531,22 +578,18 @@ def _train(  # noqa: C901
         if manager.latest_step() is not None:
             start_step = manager.latest_step()
             print(f"\n=== Resuming training from step {start_step} ===")
-            restored = {"trainable": trainable, "opt_state": opt_state}
-            if return_loss_history:
-                restored["loss_history"] = jnp.zeros(start_step + 1)
-
-            try:
-                restored = manager.restore(
-                    start_step, args=ocp.args.StandardRestore(restored)
-                )
-            except ValueError:
-                restored["loss_history"] = jnp.zeros(start_step + 2)
-                restored = manager.restore(
-                    start_step, args=ocp.args.StandardRestore(restored)
-                )
+            restored, loss_ref_restored = _restore_train_checkpoint(
+                manager,
+                start_step,
+                trainable,
+                opt_state,
+                return_loss_history,
+                loss_ref,
+            )
 
             trainable = restored["trainable"]
             opt_state = restored["opt_state"]
+            loss_ref = restored.get("loss_ref", loss_ref)
             net = eqx.combine(trainable, frozen, static)
 
             if return_loss_history:
@@ -613,8 +656,11 @@ def _train(  # noqa: C901
         print(f"Resampled at step {start_step}.")
         x_col, key = adaptive_sampler(eqx.combine(trainable, frozen, static), key=key)
 
-    loss_ref = jnp.asarray(1.0)
-    if normalize_loss and (start_step < steps):
+    if not normalize_loss:
+        loss_ref = jnp.asarray(1.0)
+    elif loss_ref_restored:
+        print(f"Restored loss normalization scale: {loss_ref:.6e}.")
+    elif start_step < steps:
         loss_ref = _safe_loss_ref(
             raw_loss(trainable, frozen, static, *x, training_samples, *x_col)
         )
@@ -666,7 +712,11 @@ def _train(  # noqa: C901
             and (step > start_step)
             and _is_multiple_or_last(step, checkpoint_every, steps)
         ):
-            man_args = {"trainable": trainable, "opt_state": opt_state}
+            man_args = {
+                "trainable": trainable,
+                "opt_state": opt_state,
+                "loss_ref": loss_ref,
+            }
             if len(loss_history):
                 man_args["loss_history"] = jnp.asarray(loss_history)
             manager.save(step, args=ocp.args.StandardSave(man_args))
@@ -681,6 +731,7 @@ def _train(  # noqa: C901
 
     if manager:
         manager.wait_until_finished()
+        manager.close()
 
     net = eqx.combine(trainable, frozen, static)
     return (net, loss_history) if return_loss_history else net
@@ -696,7 +747,6 @@ def _trust_region_train(  # noqa: C901
     rtol,
     atol,
     linear_solver,
-    learning_rate,
     adaptive_sampler=None,
     adaptive_sample_freq=100,
     # progress & reproducibility params
@@ -727,8 +777,6 @@ def _trust_region_train(  # noqa: C901
         Absolute tolerance for the solver.
     linear_solver : lineax.AbstractLinearSolver
         The linear solver used to compute the Gauss-Newton step.
-    learning_rate : float
-        Stepsize/damping parameter for the solver.
     adaptive_sampler : callable, optional
         Function to generate new collocation points.
     adaptive_sample_freq : int, optional
@@ -755,6 +803,8 @@ def _trust_region_train(  # noqa: C901
 
     """
     trainable, frozen, static = partition(net)
+    loss_ref = jnp.asarray(1.0)
+    loss_ref_restored = False
     solver = optimistix.LevenbergMarquardt(
         rtol=rtol,
         atol=atol,
@@ -770,11 +820,11 @@ def _trust_region_train(  # noqa: C901
         if manager.latest_step() is not None:
             start_step = manager.latest_step()
             print(f"\n=== Resuming training from step {start_step} ===")
-            restored = manager.restore(
-                start_step,
-                args=ocp.args.StandardRestore({"trainable": trainable}),
+            restored, loss_ref_restored = _restore_trust_region_checkpoint(
+                manager, start_step, trainable, loss_ref
             )
             trainable = restored["trainable"]
+            loss_ref = restored.get("loss_ref", loss_ref)
             net = eqx.combine(trainable, frozen, static)
             start_step += 1
 
@@ -801,8 +851,6 @@ def _trust_region_train(  # noqa: C901
     if checkpoint_every > 0:
         step_frequencies.append(checkpoint_every)
     step_per_opt = min(step_frequencies)
-    loss_ref = jnp.asarray(1.0)
-
     for step in range(start_step, steps, step_per_opt):
         steps_this_chunk = min(step_per_opt, steps - step)
         if (
@@ -819,7 +867,11 @@ def _trust_region_train(  # noqa: C901
                 eqx.combine(trainable, frozen, static), key=key
             )
 
-        if normalize_loss and (step == start_step):
+        if not normalize_loss:
+            loss_ref = jnp.asarray(1.0)
+        elif loss_ref_restored and (step == start_step):
+            print(f"Restored loss normalization scale: {loss_ref:.6e}.")
+        elif step == start_step:
             initial_residual = raw_loss(
                 trainable, (frozen, static, *x, training_samples, *x_col)
             )
@@ -853,7 +905,9 @@ def _trust_region_train(  # noqa: C901
         ):
             manager.save(
                 current_step,
-                args=ocp.args.StandardSave({"trainable": trainable}),
+                args=ocp.args.StandardSave(
+                    {"trainable": trainable, "loss_ref": loss_ref}
+                ),
             )
 
         if (
@@ -873,6 +927,7 @@ def _trust_region_train(  # noqa: C901
 
     if manager:
         manager.wait_until_finished()
+        manager.close()
 
     net = eqx.combine(trainable, frozen, static)
     return net
@@ -1208,8 +1263,9 @@ def multistage_trust_region_train(
         Default is QR for first stage and conjugate gradient on the normal
         equations for following stages.
     learning_rate : float, optional
-        The initial damping parameter (step size) for the Levenberg-Marquardt
-        algorithm.
+        Learning rate passed to the LBFGS warmup optimizer. The
+        Levenberg-Marquardt phase is controlled by ``rtol``, ``atol``, and
+        ``linear_solver``.
     adaptive_sample_freq : int, optional
         Frequency of adaptive sampling during training with trust region method.
         Default is 100. LBFGS warmup steps will adaptive sample with
@@ -1337,7 +1393,6 @@ def multistage_trust_region_train(
             rtol=rtol,
             atol=atol,
             linear_solver=linear_solver,
-            learning_rate=learning_rate,
             adaptive_sampler=adaptive_sampler,
             adaptive_sample_freq=adaptive_sample_freq,
             checkpoint_path=os.path.join(checkpoint_dir, f"{name}_stage_{stage}"),

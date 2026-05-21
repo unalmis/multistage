@@ -198,6 +198,27 @@ def test_chebyshev_frequency_has_positive_floor():
     assert jnp.isfinite(eps_prediction)
 
 
+def test_chebyshev_frequency_ignores_dc_offset():
+    """A large DC term should not hide the dominant Chebyshev mode."""
+    net = _DummyModel(-1.0, 1.0, in_size=1)
+    params, static = eqx.partition(net, eqx.is_inexact_array)
+    mode = 9
+
+    def residual_1d(model, x):
+        del model
+        residual = 10.0 + jnp.cos(mode * jnp.arccos(x))
+        return residual, residual
+
+    _, _, kappa = stats_chebyshev(
+        params,
+        static,
+        residual_1d,
+        num_samples=(64,),
+        order=(1,),
+    )
+    np.testing.assert_allclose(kappa, jnp.array([mode]))
+
+
 @pytest.mark.parametrize(
     "fx_m, fx_t, ft_m, ft_t, num_samples, heuristic",
     [

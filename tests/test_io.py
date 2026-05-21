@@ -8,7 +8,9 @@ import optax
 import pytest
 from paramax import unwrap
 
-from multistage import Stage1, Stage2, load, save
+import multistage._multistage as multistage_module
+import multistage._plot as plot_module
+from multistage import Stage1, Stage2, load, plot_loss, save
 from multistage._multistage import (
     _feature_scale_from_frequency,
     _train,
@@ -164,6 +166,92 @@ def test_train_print_every_zero_only_logs_final():
         print_every=0,
         checkpoint_path=None,
     )
+
+
+def test_train_checkpoints_loss_ref(monkeypatch):
+    """Normalized training checkpoints should preserve their objective scale."""
+    saved = []
+
+    class FakeManager:
+        def latest_step(self):
+            return None
+
+        def save(self, step, args):
+            del step
+            saved.append(args)
+
+        def wait_until_finished(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        multistage_module, "checkpoint_manager", lambda checkpoint_path: FakeManager()
+    )
+    monkeypatch.setattr(multistage_module.ocp.args, "StandardSave", lambda args: args)
+
+    key = jax.random.PRNGKey(0)
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+        key=key,
+    )
+    x = [jnp.array([0.2, 0.8])]
+    y = jnp.array([0.0, 0.0])
+
+    def loss_fun(net, x_data, u_data, x_col):
+        del x_col
+        u_pred = jax.vmap(net)(x_data)
+        return jnp.mean((u_pred - u_data) ** 2)
+
+    _train(
+        net,
+        loss_fun,
+        x,
+        y,
+        optimizer=optax.sgd,
+        steps=2,
+        learning_rate=0.0,
+        adaptive_sampler=None,
+        return_loss_history=True,
+        print_every=0,
+        checkpoint_path="fake",
+        checkpoint_every=1,
+    )
+
+    assert saved
+    assert "loss_ref" in saved[-1]
+    assert jnp.isfinite(saved[-1]["loss_ref"])
+
+
+def test_plot_loss_skips_checkpoints_without_loss_history(tmp_path, monkeypatch):
+    """Trust-region checkpoints without loss history should not break plotting."""
+
+    class FakeManager:
+        def latest_step(self):
+            return 0
+
+        def restore(self, step, args):
+            del step, args
+            return {"trainable": jnp.array([1.0]), "loss_ref": jnp.array(1.0)}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        plot_module,
+        "checkpoint_manager",
+        lambda path, create=False: FakeManager(),
+    )
+
+    figname = tmp_path / "loss.pdf"
+    plot_loss("fake", figname)
+    assert figname.exists()
 
 
 @pytest.mark.parametrize("params_are_trainable", [True, False])
