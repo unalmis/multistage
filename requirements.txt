@@ -1,7 +1,7 @@
 # Also need to top pin the Python version to 'python < 3.14'.
-equinox >= 0.13.1
-interpax_fft
-jax >= 0.5.0, != 0.5.1, != 0.5.2, != 0.6.0, != 0.7.1, <= 0.8.2
+equinox >= 0.13.1, != 0.13.3
+interpax_fft >= 0.0.8
+jax >= 0.5.0, != 0.5.1, != 0.5.2, != 0.6.0, != 0.7.1, != 0.8.2, <= 0.8.3
 lineax
 matplotlib
 numpy
