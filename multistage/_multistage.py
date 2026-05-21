@@ -410,9 +410,11 @@ class Stage2(eqx.Module):
         return x
 
     def get_param(self, key, default=None):
-        """Return ``self.params["key"]`` if it exists and is not None else default."""
+        """Return this stage's parameter, or inherit it from the previous stage."""
         val = self.params.get(key, default)
-        return default if val is None else val
+        if val is not None:
+            return val
+        return self.s1.get_param(key, default)
 
     def print_params(self):
         """Print the params of this network."""
@@ -1071,8 +1073,7 @@ def multistage_train(
     if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
 
-    adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
-    adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
+    adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
     residual_fun = residual_fun_s1
     loss_fun = loss_fun_s1
@@ -1086,11 +1087,14 @@ def multistage_train(
                 benchmark_state(n, stage, name, step=s)
 
         if adaptive_sample_freq > 0:
+            stage_adaptive_sample_kwargs = dict(adaptive_sample_kwargs_base)
+            stage_adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
+            stage_adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
             adaptive_sampler = partial(
                 adaptive_sample,
                 residual_fun=residual_fun,
                 in_size=net.in_size,
-                **adaptive_sample_kwargs,
+                **stage_adaptive_sample_kwargs,
             )
         else:
             adaptive_sampler = None
@@ -1336,8 +1340,7 @@ def multistage_trust_region_train(
     if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
 
-    adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
-    adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
+    adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
     residual_fun = residual_fun_s1
     loss_fun = loss_fun_s1
@@ -1352,11 +1355,14 @@ def multistage_trust_region_train(
                 benchmark_state(n, stage, name, step=s)
 
         if adaptive_sample_freq > 0:
+            stage_adaptive_sample_kwargs = dict(adaptive_sample_kwargs_base)
+            stage_adaptive_sample_kwargs.setdefault("n_candidates", len(x[0]) * 10)
+            stage_adaptive_sample_kwargs.setdefault("n_selected", len(x[0]) // 2)
             adaptive_sampler = partial(
                 adaptive_sample,
                 residual_fun=residual_fun,
                 in_size=net.in_size,
-                **adaptive_sample_kwargs,
+                **stage_adaptive_sample_kwargs,
             )
         else:
             adaptive_sampler = None

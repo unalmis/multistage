@@ -238,6 +238,17 @@ def test_total_lambdas_for_forward_and_inverse_stages():
     assert jnp.allclose(lam_1, 2.0)
     assert jnp.allclose(lam_2, 0.5)
 
+    s2_partial_inverse = Stage2(
+        s1,
+        epsilon=1e-3,
+        kappa=jnp.array([2.0, 3.0]),
+        params={"lambda_1": jnp.array([3.0])},
+        params_are_trainable=True,
+    )
+    lam_1, lam_2 = total_lambdas(s2_partial_inverse)
+    assert jnp.allclose(lam_1, 3.0)
+    assert jnp.allclose(lam_2, 0.25)
+
 
 def beta_burgers(model, t, x):
     """Coefficients of u_t, u, u_x, and u_xx in the linearized operator."""

@@ -62,6 +62,24 @@ def test_frozen_params_do_not_seed_stage_corrections():
     assert _trainable_params_or_none(net._params) is None
 
 
+def test_stage2_get_param_inherits_missing_values():
+    """Correction stages inherit previous PDE parameters unless overridden."""
+    s1, _ = _get_s1(params_are_trainable=False)
+    s2 = Stage2(
+        s1,
+        epsilon=0.1,
+        kappa=jnp.array([2.0, 3.0]),
+        params={"lambda_1": jnp.array([3.0])},
+        params_are_trainable=True,
+    )
+
+    np.testing.assert_allclose(s2.get_param("lambda_1"), jnp.array([3.0]))
+    np.testing.assert_allclose(
+        s2.get_param("log_lambda_2"), s1.get_param("log_lambda_2")
+    )
+    assert s2.get_param("missing", 4.0) == 4.0
+
+
 def test_stage2_frequency_compensates_for_linear_initialization():
     """``kappa`` is a target frequency, not the raw first-layer scale factor."""
     kappa = jnp.array([4.0, 7.0])
@@ -227,6 +245,86 @@ def test_train_checkpoints_loss_ref(monkeypatch):
     assert saved
     assert "loss_ref" in saved[-1]
     assert jnp.isfinite(saved[-1]["loss_ref"])
+
+
+def test_multistage_adaptive_defaults_follow_stage_data(monkeypatch):
+    """Default adaptive sample counts should be based on the current stage."""
+    calls = []
+
+    def fake_adaptive_sample(
+        net, residual_fun, in_size, n_candidates, n_selected, key=None, **kwargs
+    ):
+        del net, residual_fun, kwargs
+        calls.append((n_candidates, n_selected))
+        return [jnp.zeros(n_selected) for _ in range(in_size)], key
+
+    def fake_train(
+        net,
+        loss_fun,
+        x,
+        training_samples,
+        optimizer,
+        steps,
+        *,
+        adaptive_sampler=None,
+        key=None,
+        return_loss_history=True,
+        **kwargs,
+    ):
+        del loss_fun, x, training_samples, optimizer, steps, kwargs
+        if adaptive_sampler is not None:
+            adaptive_sampler(net, key=key)
+        return (net, []) if return_loss_history else net
+
+    def fake_stats(*args, **kwargs):
+        del args, kwargs
+        return jnp.array(1.0), jnp.array(0.1), jnp.array([2.0])
+
+    monkeypatch.setattr(multistage_module, "adaptive_sample", fake_adaptive_sample)
+    monkeypatch.setattr(multistage_module, "_train", fake_train)
+    monkeypatch.setattr(multistage_module, "stats", fake_stats)
+    monkeypatch.setattr(multistage_module, "save", lambda *args, **kwargs: None)
+
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+    )
+    x_stage1 = [jnp.linspace(0.0, 1.0, 4)]
+    y_stage1 = jnp.zeros(4)
+    x_stage2 = [jnp.linspace(0.0, 1.0, 8)]
+    y_stage2 = jnp.zeros(8)
+
+    def residual_fun(model, x):
+        del model
+        return x, x
+
+    def loss_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return jnp.array(0.0)
+
+    multistage_module.multistage_train(
+        net,
+        residual_fun,
+        residual_fun,
+        loss_fun,
+        loss_fun,
+        x_stage1,
+        y_stage1,
+        optimizer=optax.sgd,
+        steps=1,
+        learning_rate=0.0,
+        adaptive_sample_freq=1,
+        n_stages=2,
+        x_stage2=x_stage2,
+        training_samples_stage2=y_stage2,
+        checkpoint_every=0,
+    )
+
+    assert calls == [(40, 2), (80, 4)]
 
 
 def test_plot_loss_skips_checkpoints_without_loss_history(tmp_path, monkeypatch):
