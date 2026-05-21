@@ -98,6 +98,31 @@ def test_stage_correction_requires_explicit_unknown_transform_map():
     np.testing.assert_allclose(corrections["alpha"], jnp.array([0.0]))
 
 
+def test_stage_correction_custom_map_extends_default_transform_map():
+    """Custom correction maps should not drop built-in transformed params."""
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+        params={
+            "log_lambda_2": jnp.log(jnp.array([0.2])),
+            "log_alpha": jnp.array([0.3]),
+        },
+        params_are_trainable=True,
+    )
+
+    corrections = _stage_correction_params_or_none(
+        net._params, correction_param_map={"log_alpha": "alpha"}
+    )
+
+    assert corrections.keys == ("lambda_2", "alpha")
+    np.testing.assert_allclose(corrections["lambda_2"], jnp.array([0.0]))
+    np.testing.assert_allclose(corrections["alpha"], jnp.array([0.0]))
+
+
 def test_stage_correction_rejects_parameter_map_collisions():
     """Two current params cannot silently initialize one correction param."""
     net = Stage1(
@@ -890,8 +915,8 @@ def test_multistage_train_uses_zero_inverse_param_corrections(monkeypatch):
     np.testing.assert_allclose(stage2.get_param("lambda_2"), jnp.array([0.0]))
 
 
-def test_multistage_train_uses_custom_stage_correction_param_map(monkeypatch):
-    """Users can prescribe neutral correction params for other transforms."""
+def test_multistage_train_extends_default_stage_correction_param_map(monkeypatch):
+    """Custom correction maps should preserve built-in correction defaults."""
     trained_nets = []
 
     def fake_train(
@@ -924,7 +949,10 @@ def test_multistage_train_uses_custom_stage_correction_param_map(monkeypatch):
         out_size=1,
         width_size=2,
         depth=1,
-        params={"log_alpha": jnp.array([0.3])},
+        params={
+            "log_lambda_2": jnp.log(jnp.array([0.2])),
+            "log_alpha": jnp.array([0.3]),
+        },
         params_are_trainable=True,
     )
 
@@ -955,7 +983,8 @@ def test_multistage_train_uses_custom_stage_correction_param_map(monkeypatch):
 
     assert len(trained_nets) == 2
     stage2 = trained_nets[1]
-    assert stage2.params.keys == ("alpha",)
+    assert stage2.params.keys == ("lambda_2", "alpha")
+    np.testing.assert_allclose(stage2.get_param("lambda_2"), jnp.array([0.0]))
     np.testing.assert_allclose(stage2.get_param("alpha"), jnp.array([0.0]))
 
 

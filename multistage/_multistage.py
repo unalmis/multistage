@@ -82,8 +82,10 @@ def _stage_correction_params_or_none(params, correction_param_map=None):
     estimate. Transformed parameters require an explicit map because their
     neutral correction value depends on how the PDE residual combines stages.
     """
-    if correction_param_map is None:
-        correction_param_map = _DEFAULT_STAGE_CORRECTION_PARAM_MAP
+    correction_param_map = {
+        **_DEFAULT_STAGE_CORRECTION_PARAM_MAP,
+        **({} if correction_param_map is None else correction_param_map),
+    }
 
     params = _trainable_params_or_none(params)
     if params is None:
@@ -309,9 +311,11 @@ class Stage2(eqx.Module):
         Approximate magnitude of output.
     kappa : jax.Array
         Approximate angular frequency of this stage's output in normalized
-        coordinates, one value per input direction. This is converted internally
-        to the first-layer scale factor used by the sinusoidal feature map.
-        Shape (s1._mlp.in_size, ).
+        coordinates. For ``feature_map="separable"``, each entry is the target
+        frequency for one input direction. For ``feature_map="random"``, the
+        vector gives anisotropic component scales; if all entries are equal,
+        the random wave-vector RMS norm matches that common value.
+        Shape ``(s1.in_size,)``.
     width_size : int
         Size of each hidden layer.
     depth : int
@@ -341,7 +345,8 @@ class Stage2(eqx.Module):
     feature_map : {"separable", "random"}
         First-layer Fourier feature geometry. ``"separable"`` assigns each
         sinusoidal feature to one input coordinate; ``"random"`` preserves the
-        original dense random plane-wave mapping.
+        original dense random plane-wave mapping and interprets ``kappa`` as an
+        isotropic wave-vector norm when all entries are equal.
     kwargs : dict
         Keyword arguments to ``equinox.nn.MLP``.
 
@@ -1113,8 +1118,9 @@ def multistage_train(
         default; ``"random"`` preserves the previous dense plane-wave mapping.
     stage_correction_param_map : dict, optional
         Mapping from current-stage parameter names to next-stage correction
-        names or initializers. Defaults include ``{"log_lambda_2": "lambda_2"}``
-        for Burgers-style signed physical diffusion corrections.
+        names or initializers. Custom entries extend the built-in defaults,
+        including ``{"log_lambda_2": "lambda_2"}`` for Burgers-style signed
+        physical diffusion corrections.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
@@ -1391,8 +1397,9 @@ def multistage_trust_region_train(
         default; ``"random"`` preserves the previous dense plane-wave mapping.
     stage_correction_param_map : dict, optional
         Mapping from current-stage parameter names to next-stage correction
-        names or initializers. Defaults include ``{"log_lambda_2": "lambda_2"}``
-        for Burgers-style signed physical diffusion corrections.
+        names or initializers. Custom entries extend the built-in defaults,
+        including ``{"log_lambda_2": "lambda_2"}`` for Burgers-style signed
+        physical diffusion corrections.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
