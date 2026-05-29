@@ -1,0 +1,6 @@
+﻿multistage.multistage\_trust\_region\_train
+===========================================
+
+.. currentmodule:: multistage
+
+.. autofunction:: multistage_trust_region_train

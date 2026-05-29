@@ -1,0 +1,6 @@
+﻿multistage.plot\_2d\_solution
+=============================
+
+.. currentmodule:: multistage
+
+.. autofunction:: plot_2d_solution

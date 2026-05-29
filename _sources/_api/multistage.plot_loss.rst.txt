@@ -1,0 +1,6 @@
+﻿multistage.plot\_loss
+=====================
+
+.. currentmodule:: multistage
+
+.. autofunction:: plot_loss
