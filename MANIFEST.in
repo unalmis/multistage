@@ -1,5 +1,5 @@
 include versioneer.py
 include multistage/_version.py
 include requirements.txt
-include requirements-dev.txt
+include devtools/requirements-dev.txt
 include LICENSE

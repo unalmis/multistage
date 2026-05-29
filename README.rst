@@ -28,7 +28,7 @@ You may optionally install the developer requirements if you want to run tests.
 
 .. code-block:: sh
 
-    pip install -r requirements-dev.txt
+    pip install -r devtools/requirements-dev.txt
 
 
 For full details of various options see the `API documentation <https://unalmis.github.io/multistage/>`__.
