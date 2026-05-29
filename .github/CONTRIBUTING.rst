@@ -177,7 +177,7 @@ Python Styleguide
 ``pytest``
 ----------
 
-The testing suite is based on `pytest <https://docs.pytest.org/>`__, and makes use of several plugins for specialized testing. You can install all the necessary tools with ``pip install -r requirements-dev.txt``. You can run the tests from the root of the repository with ``pytest -m unit``. To only run selected tests you can use ``pytest -k foo`` which will only run tests that have ``foo`` in the test or file name.
+The testing suite is based on `pytest <https://docs.pytest.org/>`__, and makes use of several plugins for specialized testing. You can install all the necessary tools with ``pip install -r devtools/requirements-dev.txt``. You can run the tests from the root of the repository with ``pytest -m unit``. To only run selected tests you can use ``pytest -k foo`` which will only run tests that have ``foo`` in the test or file name.
 
 Additional useful flags include:
 
@@ -187,8 +187,8 @@ Additional useful flags include:
 `Git Commit Messages <https://chris.beams.io/posts/git-commit/>`__
 *******************************************************************
 
--  A commit message template is included in the repository, ``.gitmessagetemplate``
--  You can set the template to be the default with ``git config commit.template .gitmessagetemplate``
+-  A commit message template is included in the repository, ``devtools/gitmessagetemplate``
+-  You can set the template to be the default with ``git config commit.template devtools/gitmessagetemplate``
 
 Some helpful rules to follow (also included in the template):
 

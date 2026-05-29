@@ -46,7 +46,7 @@ setup(
     python_requires=">=3.10",
     project_urls={
         "Issues Tracker": "https://github.com/unalmis/multistage/issues",
-        "Contributing": "https://github.com/unalmis/multistage/blob/master/CONTRIBUTING.rst",  # noqa: E501
+        "Contributing": "https://github.com/unalmis/multistage/blob/main/.github/CONTRIBUTING.rst",  # noqa: E501
         "Source Code": "https://github.com/unalmis/multistage/",
         "Documentation": "https://unalmis.github.io/multistage/",
     },
