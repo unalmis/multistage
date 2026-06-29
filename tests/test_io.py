@@ -18,6 +18,7 @@ from multistage._multistage import (
     _train,
     _trainable_params_or_none,
     _trust_region_train,
+    _warn_if_training_samples_underresolved,
     select_gamma,
 )
 
@@ -1057,9 +1058,85 @@ def test_select_gamma_increases_weight_for_slow_equation_convergence():
         initial_gamma=0.1,
         steps=5,
         max_trials=2,
+        rate_tolerance=0.01,
     )
 
     assert gamma > 0.1
+
+
+def test_select_gamma_can_reach_small_weights_for_slow_data_convergence():
+    """Gamma selection should not be trapped near 0.5 for high-frequency stages."""
+
+    class TwoLossModel(eqx.Module):
+        in_size: int
+        data_param: jax.Array
+        equation_param: jax.Array
+
+    net = TwoLossModel(
+        in_size=1,
+        data_param=jnp.array(1.0),
+        equation_param=jnp.array(1.0),
+    )
+
+    def component_fun(model, x_data, u_data, x_col):
+        del x_data, u_data, x_col
+        return {
+            "data": 1e-6 * model.data_param**2,
+            "equation": model.equation_param**2,
+        }
+
+    gamma = select_gamma(
+        net,
+        component_fun,
+        [jnp.array([0.0])],
+        jnp.zeros(1),
+        optax.sgd,
+        0.1,
+        initial_gamma=0.5,
+        steps=50,
+        max_trials=10,
+        adjustment=10.0,
+        bounds=(1e-12, 1.0 - 1e-6),
+        rate_tolerance=0.01,
+    )
+
+    assert gamma < 1e-2
+
+
+def test_training_frequency_warning_uses_effective_scattered_resolution():
+    """Scattered multi-D data should use N**(1/d), not total N, per axis."""
+    n = 100
+    x = [
+        jnp.linspace(0.0, 1.0, n),
+        jnp.linspace(0.123, 1.123, n),
+    ]
+    kappa = jnp.array([10.0 * jnp.pi, 10.0 * jnp.pi])
+
+    with pytest.warns(UserWarning, match="under-resolved"):
+        _warn_if_training_samples_underresolved(
+            kappa,
+            x,
+            samples_per_mode=6.0,
+            stage=0,
+        )
+
+
+def test_training_frequency_warning_accepts_explicit_axis_counts():
+    """Callers can supply known per-axis collocation resolution."""
+    x = [
+        jnp.linspace(0.0, 1.0, 100),
+        jnp.linspace(0.123, 1.123, 100),
+    ]
+    kappa = jnp.array([10.0 * jnp.pi, 10.0 * jnp.pi])
+
+    with pytest.warns(UserWarning, match="under-resolved"):
+        _warn_if_training_samples_underresolved(
+            kappa,
+            x,
+            samples_per_mode=6.0,
+            stage=0,
+            num_samples=(20, 20),
+        )
 
 
 def test_multistage_train_auto_gamma_wraps_component_loss(monkeypatch):

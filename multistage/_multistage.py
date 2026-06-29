@@ -738,13 +738,35 @@ def _warn_if_frequency_underresolved(
         )
 
 
+def _effective_axis_sample_counts(x):
+    """Estimate per-axis resolution for grid or scattered collocation arrays."""
+    total = min(xi.shape[0] for xi in x)
+    in_size = len(x)
+    if in_size == 1:
+        return (total,)
+
+    unique_counts = []
+    for xi in x:
+        xi = np.asarray(xi)
+        unique_counts.append(np.unique(xi).size)
+
+    unique_product = np.prod(unique_counts, dtype=float)
+    if unique_product <= max(total, 1):
+        return tuple(unique_counts)
+
+    effective = max(total, 1) ** (1.0 / in_size)
+    return (effective,) * in_size
+
+
 def _warn_if_training_samples_underresolved(
-    kappa, x, samples_per_mode, stage, *, chebyshev=False
+    kappa, x, samples_per_mode, stage, *, chebyshev=False, num_samples=None
 ):
     if samples_per_mode is None:
         return
-    num_samples = min(xi.shape[0] for xi in x)
-    num_samples = (num_samples,) * len(kappa)
+    if num_samples is None:
+        num_samples = _effective_axis_sample_counts(x)
+    if len(num_samples) == 1:
+        num_samples = (num_samples[0],) * len(kappa)
     _warn_if_frequency_underresolved(
         kappa, num_samples, samples_per_mode, stage, chebyshev=chebyshev
     )
@@ -760,14 +782,15 @@ def _is_auto_gamma(gamma):
     return isinstance(gamma, str) and gamma == "auto"
 
 
-def _loss_reduction_rate(initial, final, steps, eps=1e-30):
+def _loss_reduction_ratio(initial, tail, eps=1e-30):
     initial = float(np.asarray(initial))
-    final = float(np.asarray(final))
-    if not np.isfinite(initial) or not np.isfinite(final):
-        return 0.0
+    tail = np.asarray(tail, dtype=float)
+    tail = tail[np.isfinite(tail)]
+    if not np.isfinite(initial) or tail.size == 0:
+        return 1.0
     initial = max(initial, eps)
-    final = max(final, eps)
-    return max((np.log(initial) - np.log(final)) / max(steps, 1), 0.0)
+    final = max(float(np.min(tail)), eps)
+    return max(initial / final, eps)
 
 
 def _component_loss_pair(component_fun, net, args):
@@ -787,8 +810,9 @@ def _gamma_trial_rates(
     gamma,
     gamma_g,
     gamma_g_eps,
+    last_window_fraction,
 ):
-    """Return data/equation convergence rates from a reset pretraining trial."""
+    """Return data/equation convergence ratios from a reset pretraining trial."""
     trainable, frozen, static = partition(net)
     gradient_transform = optimizer(learning_rate)
     opt_state = gradient_transform.init(trainable)
@@ -831,13 +855,19 @@ def _gamma_trial_rates(
         return trainable, opt_state
 
     initial_data, initial_equation = raw_components(trainable)
+    data_history = []
+    equation_history = []
     for _ in range(steps):
         trainable, opt_state = make_step(trainable, opt_state)
-    final_data, final_equation = raw_components(trainable)
+        data_i, equation_i = raw_components(trainable)
+        data_history.append(float(np.asarray(data_i)))
+        equation_history.append(float(np.asarray(equation_i)))
+
+    window = max(1, int(np.ceil(steps * last_window_fraction)))
 
     return (
-        _loss_reduction_rate(initial_data, final_data, steps),
-        _loss_reduction_rate(initial_equation, final_equation, steps),
+        _loss_reduction_ratio(initial_data, data_history[-window:]),
+        _loss_reduction_ratio(initial_equation, equation_history[-window:]),
     )
 
 
@@ -849,21 +879,24 @@ def select_gamma(
     optimizer,
     learning_rate,
     *,
-    initial_gamma=0.5,
+    initial_gamma=1e-4,
     gamma_g=None,
     gamma_g_eps=1e-12,
     steps=100,
-    max_trials=5,
-    rate_tolerance=0.25,
-    bounds=(1e-4, 1.0 - 1e-4),
-    adjustment=2.0,
+    max_trials=10,
+    rate_tolerance=0.9,
+    bounds=(1e-12, 1.0 - 1e-6),
+    adjustment=10.0,
+    update_exponent=1.0,
+    last_window_fraction=0.1,
 ):
     """Estimate a PDE loss weight by balancing component convergence rates.
 
     This follows the paper's Algorithm 3 structure: for each trial gamma, reset
-    to the same input model, pretrain briefly, compare data/equation loss
-    convergence rates, adjust gamma, and return the best fixed gamma for the
-    real training run.
+    to the same input model, pretrain briefly, compare the data/equation loss
+    reduction ratios using the best value in the last pretraining window,
+    update gamma multiplicatively, and return the best fixed gamma for the real
+    training run.
     """
     if component_fun is None:
         raise ValueError("Automatic gamma selection requires a component loss fun.")
@@ -873,12 +906,10 @@ def select_gamma(
     lower, upper = bounds
     gamma = float(np.clip(initial_gamma, lower, upper))
     lower_ratio = max(1.0 - rate_tolerance, 1e-12)
-    upper_ratio = 1.0 + rate_tolerance
-    best_gamma = gamma
-    best_score = np.inf
+    upper_ratio = 1.0 / lower_ratio
 
     for _ in range(max_trials):
-        data_rate, equation_rate = _gamma_trial_rates(
+        data_convergence, equation_convergence = _gamma_trial_rates(
             net,
             component_fun,
             x,
@@ -889,26 +920,25 @@ def select_gamma(
             gamma,
             gamma_g,
             gamma_g_eps,
+            last_window_fraction,
         )
-        if equation_rate <= 0 and data_rate <= 0:
+        if equation_convergence <= 0 and data_convergence <= 0:
             ratio = 1.0
-        elif equation_rate <= 0:
+        elif equation_convergence <= 0:
             ratio = np.inf
         else:
-            ratio = data_rate / equation_rate
+            ratio = data_convergence / equation_convergence
 
-        score = abs(np.log(max(ratio, 1e-12))) if np.isfinite(ratio) else np.inf
-        if score < best_score:
-            best_score = score
-            best_gamma = gamma
         if lower_ratio <= ratio <= upper_ratio:
-            break
-        if ratio < lower_ratio:
-            gamma = max(lower, gamma / adjustment)
+            return float(gamma)
+        if np.isfinite(ratio):
+            factor = ratio**update_exponent
+            factor = np.clip(factor, 1.0 / adjustment, adjustment)
         else:
-            gamma = min(upper, 1.0 - (1.0 - gamma) / adjustment)
+            factor = adjustment
+        gamma = float(np.clip(gamma * factor, lower, upper))
 
-    return float(best_gamma)
+    return float(gamma)
 
 
 def _resolve_gamma(
@@ -1645,6 +1675,7 @@ def multistage_train(
     frequency_estimator="spectral",
     residual_tol=0.0,
     frequency_samples_per_mode=6.0,
+    frequency_training_samples=None,
     chebyshev=False,
     feature_map="separable",
     stage_correction_param_map=None,
@@ -1732,6 +1763,10 @@ def multistage_train(
     frequency_samples_per_mode : float or None
         Warn when the estimated Fourier/Chebyshev mode exceeds the available
         statistics samples divided by this value. Set to None to disable.
+    frequency_training_samples : tuple[int], optional
+        Explicit per-axis training/collocation resolution for frequency
+        warnings. If omitted, grid data are inferred from unique coordinates and
+        scattered data use roughly ``num_points ** (1 / in_size)`` per axis.
     chebyshev : bool
         Whether to use Chebyshev feature mapping instead of Fourier.
         If given, ``heuristic`` is ignored.
@@ -1938,6 +1973,7 @@ def multistage_train(
             frequency_samples_per_mode,
             stage,
             chebyshev=chebyshev,
+            num_samples=frequency_training_samples,
         )
 
         params = _stage_correction_params_or_none(
@@ -2004,6 +2040,7 @@ def multistage_trust_region_train(
     frequency_estimator="spectral",
     residual_tol=0.0,
     frequency_samples_per_mode=6.0,
+    frequency_training_samples=None,
     chebyshev=False,
     feature_map="separable",
     stage_correction_param_map=None,
@@ -2115,6 +2152,10 @@ def multistage_trust_region_train(
     frequency_samples_per_mode : float or None
         Warn when the estimated Fourier/Chebyshev mode exceeds the available
         statistics samples divided by this value. Set to None to disable.
+    frequency_training_samples : tuple[int], optional
+        Explicit per-axis training/collocation resolution for frequency
+        warnings. If omitted, grid data are inferred from unique coordinates and
+        scattered data use roughly ``num_points ** (1 / in_size)`` per axis.
     chebyshev : bool
         Whether to use Chebyshev feature mapping instead of Fourier.
         If given, ``heuristic`` is ignored.
@@ -2364,6 +2405,7 @@ def multistage_trust_region_train(
             frequency_samples_per_mode,
             stage,
             chebyshev=chebyshev,
+            num_samples=frequency_training_samples,
         )
 
         params = _stage_correction_params_or_none(
