@@ -8,6 +8,7 @@ from ._multistage import (
     Stage2,
     multistage_train,
     multistage_trust_region_train,
+    select_gamma,
 )
 from ._plot import plot_2d_residual, plot_2d_solution, plot_loss
 
@@ -17,6 +18,7 @@ __all__ = [
     "MultiCorrectionStage",
     "multistage_train",
     "multistage_trust_region_train",
+    "select_gamma",
     "plot_2d_residual",
     "plot_2d_solution",
     "plot_loss",

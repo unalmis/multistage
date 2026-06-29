@@ -377,7 +377,9 @@ def weighted_pde_loss(components, gamma=0.5, gamma_g=None, gamma_g_eps=1e-12):
     pde_loss = equation_loss
     if gradient_loss is not None:
         if gamma_g is None:
-            gamma_g = estimate_gamma_g(equation_loss, gradient_loss, eps=gamma_g_eps)
+            gamma_g = jax.lax.stop_gradient(
+                estimate_gamma_g(equation_loss, gradient_loss, eps=gamma_g_eps)
+            )
         pde_loss = pde_loss + gamma_g * gradient_loss
     return (1.0 - gamma) * data_loss + gamma * pde_loss
 
@@ -394,6 +396,54 @@ def make_weighted_pde_loss(component_fun, gamma=0.5, gamma_g=None, gamma_g_eps=1
         )
 
     return loss_fun
+
+
+def weighted_pde_residuals(components, gamma=0.5, gamma_g=None, gamma_g_eps=1e-12):
+    """Scale unreduced PDE residual components for least-squares solvers.
+
+    ``components`` may be a mapping with data/equation/gradient residual keys
+    or a tuple ``(data_residual, equation_residual[, gradient_residual])``.
+    The returned vector is scaled so that ``sum(weighted**2)`` matches the
+    scalar objective produced by :func:`weighted_pde_loss` for component means.
+    """
+    data_residual, equation_residual, gradient_residual = _split_pde_loss_components(
+        components
+    )
+    data_residual = jnp.ravel(data_residual)
+    equation_residual = jnp.ravel(equation_residual)
+
+    weighted = [
+        data_residual * jnp.sqrt((1.0 - gamma) / data_residual.size),
+        equation_residual * jnp.sqrt(gamma / equation_residual.size),
+    ]
+    if gradient_residual is not None:
+        gradient_residual = jnp.ravel(gradient_residual)
+        if gamma_g is None:
+            equation_loss = jnp.mean(equation_residual**2)
+            gradient_loss = jnp.mean(gradient_residual**2)
+            gamma_g = jax.lax.stop_gradient(
+                estimate_gamma_g(equation_loss, gradient_loss, eps=gamma_g_eps)
+            )
+        weighted.append(
+            gradient_residual * jnp.sqrt(gamma * gamma_g / gradient_residual.size)
+        )
+    return jnp.concatenate(weighted)
+
+
+def make_weighted_pde_residual_loss(
+    component_fun, gamma=0.5, gamma_g=None, gamma_g_eps=1e-12
+):
+    """Wrap unreduced component residuals as a weighted residual vector."""
+
+    def loss_fun_unreduced(model, *args):
+        return weighted_pde_residuals(
+            component_fun(model, *args),
+            gamma=gamma,
+            gamma_g=gamma_g,
+            gamma_g_eps=gamma_g_eps,
+        )
+
+    return loss_fun_unreduced
 
 
 def _operator_orders(order, in_size):
@@ -553,6 +603,9 @@ def stats(
         The root mean squared equation residual.
     epsilon_prediction : float
         The estimate for the root mean square prediction error.
+        This is a dominant-operator scaling heuristic,
+        ``epsilon_residual / operator_scale``; it is not the iterative
+        Algorithm 2 source-matching estimator from the paper.
     kappa : jax.Array
         Shape (self.in_size, )
         Estimated angular frequency in each direction.
@@ -649,6 +702,9 @@ def stats_chebyshev(
         The root mean squared equation residual.
     epsilon_prediction : float
         The estimate for the root mean square prediction error.
+        This is a dominant-operator scaling heuristic,
+        ``epsilon_residual / operator_scale``; it is not the iterative
+        Algorithm 2 source-matching estimator from the paper.
     kappa : jax.Array
         Shape (self.in_size, )
         Heuristic value for dominant frequency in each direction.

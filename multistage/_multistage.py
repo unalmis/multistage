@@ -18,13 +18,16 @@ from paramax import non_trainable, unwrap
 
 from ._io_utils import _ParamContainer, checkpoint_manager, save
 from ._utils import (
+    _split_pde_loss_components,
     adaptive_sample,
     is_not_trainable,
     make_weighted_pde_loss,
+    make_weighted_pde_residual_loss,
     partition,
     rescale,
     stats,
     stats_chebyshev,
+    weighted_pde_loss,
 )
 
 config.update("jax_enable_x64", True)
@@ -735,10 +738,333 @@ def _warn_if_frequency_underresolved(
         )
 
 
+def _warn_if_training_samples_underresolved(
+    kappa, x, samples_per_mode, stage, *, chebyshev=False
+):
+    if samples_per_mode is None:
+        return
+    num_samples = min(xi.shape[0] for xi in x)
+    num_samples = (num_samples,) * len(kappa)
+    _warn_if_frequency_underresolved(
+        kappa, num_samples, samples_per_mode, stage, chebyshev=chebyshev
+    )
+
+
 def _residual_below_tolerance(eps_residual, residual_tol):
     if residual_tol is None:
         return False
     return float(np.asarray(eps_residual)) <= residual_tol
+
+
+def _is_auto_gamma(gamma):
+    return isinstance(gamma, str) and gamma == "auto"
+
+
+def _loss_reduction_rate(initial, final, steps, eps=1e-30):
+    initial = float(np.asarray(initial))
+    final = float(np.asarray(final))
+    if not np.isfinite(initial) or not np.isfinite(final):
+        return 0.0
+    initial = max(initial, eps)
+    final = max(final, eps)
+    return max((np.log(initial) - np.log(final)) / max(steps, 1), 0.0)
+
+
+def _component_loss_pair(component_fun, net, args):
+    components = component_fun(net, *args)
+    data_loss, equation_loss, _ = _split_pde_loss_components(components)
+    return data_loss, equation_loss
+
+
+def _gamma_trial_rates(
+    net,
+    component_fun,
+    x,
+    training_samples,
+    optimizer,
+    learning_rate,
+    steps,
+    gamma,
+    gamma_g,
+    gamma_g_eps,
+):
+    """Return data/equation convergence rates from a reset pretraining trial."""
+    trainable, frozen, static = partition(net)
+    gradient_transform = optimizer(learning_rate)
+    opt_state = gradient_transform.init(trainable)
+    is_lbfgs = optimizer == optax.lbfgs
+    x_col = [None] * net.in_size
+    args = (*x, training_samples, *x_col)
+
+    def raw_components(trainable):
+        trial_net = eqx.combine(trainable, frozen, static)
+        return _component_loss_pair(component_fun, trial_net, args)
+
+    def loss(trainable):
+        trial_net = eqx.combine(trainable, frozen, static)
+        return weighted_pde_loss(
+            component_fun(trial_net, *args),
+            gamma=gamma,
+            gamma_g=gamma_g,
+            gamma_g_eps=gamma_g_eps,
+        )
+
+    @jit
+    def make_step(trainable, opt_state):
+        loss_value, grads = value_and_grad(loss)(trainable)
+        if is_lbfgs:
+
+            def loss_lbfgs(trainable):
+                return loss(trainable)
+
+            updates, opt_state = gradient_transform.update(
+                grads,
+                opt_state,
+                trainable,
+                value=loss_value,
+                grad=grads,
+                value_fn=loss_lbfgs,
+            )
+        else:
+            updates, opt_state = gradient_transform.update(grads, opt_state, trainable)
+        trainable = eqx.apply_updates(trainable, updates)
+        return trainable, opt_state
+
+    initial_data, initial_equation = raw_components(trainable)
+    for _ in range(steps):
+        trainable, opt_state = make_step(trainable, opt_state)
+    final_data, final_equation = raw_components(trainable)
+
+    return (
+        _loss_reduction_rate(initial_data, final_data, steps),
+        _loss_reduction_rate(initial_equation, final_equation, steps),
+    )
+
+
+def select_gamma(
+    net,
+    component_fun,
+    x,
+    training_samples,
+    optimizer,
+    learning_rate,
+    *,
+    initial_gamma=0.5,
+    gamma_g=None,
+    gamma_g_eps=1e-12,
+    steps=100,
+    max_trials=5,
+    rate_tolerance=0.25,
+    bounds=(1e-4, 1.0 - 1e-4),
+    adjustment=2.0,
+):
+    """Estimate a PDE loss weight by balancing component convergence rates.
+
+    This follows the paper's Algorithm 3 structure: for each trial gamma, reset
+    to the same input model, pretrain briefly, compare data/equation loss
+    convergence rates, adjust gamma, and return the best fixed gamma for the
+    real training run.
+    """
+    if component_fun is None:
+        raise ValueError("Automatic gamma selection requires a component loss fun.")
+    if steps <= 0 or max_trials <= 0:
+        return float(initial_gamma)
+
+    lower, upper = bounds
+    gamma = float(np.clip(initial_gamma, lower, upper))
+    lower_ratio = max(1.0 - rate_tolerance, 1e-12)
+    upper_ratio = 1.0 + rate_tolerance
+    best_gamma = gamma
+    best_score = np.inf
+
+    for _ in range(max_trials):
+        data_rate, equation_rate = _gamma_trial_rates(
+            net,
+            component_fun,
+            x,
+            training_samples,
+            optimizer,
+            learning_rate,
+            steps,
+            gamma,
+            gamma_g,
+            gamma_g_eps,
+        )
+        if equation_rate <= 0 and data_rate <= 0:
+            ratio = 1.0
+        elif equation_rate <= 0:
+            ratio = np.inf
+        else:
+            ratio = data_rate / equation_rate
+
+        score = abs(np.log(max(ratio, 1e-12))) if np.isfinite(ratio) else np.inf
+        if score < best_score:
+            best_score = score
+            best_gamma = gamma
+        if lower_ratio <= ratio <= upper_ratio:
+            break
+        if ratio < lower_ratio:
+            gamma = max(lower, gamma / adjustment)
+        else:
+            gamma = min(upper, 1.0 - (1.0 - gamma) / adjustment)
+
+    return float(best_gamma)
+
+
+def _resolve_gamma(
+    net,
+    component_fun,
+    x,
+    training_samples,
+    optimizer,
+    learning_rate,
+    gamma,
+    gamma_g,
+    gamma_g_eps,
+    gamma_select_kwargs,
+):
+    if not _is_auto_gamma(gamma):
+        return gamma
+    selected = select_gamma(
+        net,
+        component_fun,
+        x,
+        training_samples,
+        optimizer,
+        learning_rate,
+        gamma_g=gamma_g,
+        gamma_g_eps=gamma_g_eps,
+        **gamma_select_kwargs,
+    )
+    print(f"Selected gamma={selected:.6e} by component pretraining.")
+    return selected
+
+
+def _resolve_loss_fun(
+    net,
+    loss_fun,
+    component_fun,
+    x,
+    training_samples,
+    optimizer,
+    learning_rate,
+    gamma,
+    gamma_g,
+    gamma_g_eps,
+    gamma_select_kwargs,
+):
+    if component_fun is None:
+        if _is_auto_gamma(gamma):
+            raise ValueError("Automatic gamma selection requires a component loss fun.")
+        return loss_fun, gamma
+    gamma = _resolve_gamma(
+        net,
+        component_fun,
+        x,
+        training_samples,
+        optimizer,
+        learning_rate,
+        gamma,
+        gamma_g,
+        gamma_g_eps,
+        gamma_select_kwargs,
+    )
+    return (
+        make_weighted_pde_loss(
+            component_fun,
+            gamma=gamma,
+            gamma_g=gamma_g,
+            gamma_g_eps=gamma_g_eps,
+        ),
+        gamma,
+    )
+
+
+def _resolve_unreduced_loss_fun(
+    loss_fun_unreduced,
+    residual_component_fun,
+    gamma,
+    gamma_g,
+    gamma_g_eps,
+):
+    if residual_component_fun is None:
+        return loss_fun_unreduced
+    return make_weighted_pde_residual_loss(
+        residual_component_fun,
+        gamma=gamma,
+        gamma_g=gamma_g,
+        gamma_g_eps=gamma_g_eps,
+    )
+
+
+def _as_correction_specs(extra_stage_corrections, net, stage, stats_values):
+    if extra_stage_corrections is None:
+        return ()
+    if callable(extra_stage_corrections):
+        extra_stage_corrections = extra_stage_corrections(net, stage, *stats_values)
+    if isinstance(extra_stage_corrections, dict):
+        return (extra_stage_corrections,)
+    return tuple(extra_stage_corrections)
+
+
+def _resolve_correction_spec(spec, net, stage, stats_values):
+    eps_residual, eps_prediction, kappa = stats_values
+    if callable(spec):
+        spec = spec(net, stage, eps_residual, eps_prediction, kappa)
+    if isinstance(spec, dict):
+        epsilon = spec.get("epsilon", spec.get("epsilon_scale", 1.0) * eps_prediction)
+        kappa_i = spec.get("kappa", spec.get("kappa_scale", 1.0) * kappa)
+        return epsilon, kappa_i
+    epsilon, kappa_i = spec
+    return epsilon, kappa_i
+
+
+def _build_next_stage(
+    net,
+    params,
+    key,
+    activation,
+    eps_prediction,
+    kappa,
+    width_size,
+    depth,
+    chebyshev,
+    feature_map,
+    extra_stage_corrections,
+    stage,
+    eps_residual,
+):
+    stats_values = (eps_residual, eps_prediction, kappa)
+    epsilons = [eps_prediction]
+    kappas = [kappa]
+    for spec in _as_correction_specs(extra_stage_corrections, net, stage, stats_values):
+        epsilon_i, kappa_i = _resolve_correction_spec(spec, net, stage, stats_values)
+        epsilons.append(epsilon_i)
+        kappas.append(jnp.asarray(kappa_i))
+
+    common_kwargs = dict(
+        width_size=width_size,
+        depth=depth,
+        params_are_trainable=params is not None,
+        chebyshev=chebyshev,
+        feature_map=feature_map,
+    )
+    if len(epsilons) == 1:
+        save_kwargs = dict(epsilon=epsilons[0], kappa=kappas[0], **common_kwargs)
+        next_net = Stage2(
+            net, params=params, key=key, activation=activation, **save_kwargs
+        )
+        return next_net, save_kwargs
+
+    save_kwargs = dict(
+        epsilons=jnp.asarray(epsilons),
+        kappas=jnp.stack(kappas),
+        **common_kwargs,
+    )
+    next_net = MultiCorrectionStage(
+        net, params=params, key=key, activation=activation, **save_kwargs
+    )
+    return next_net, save_kwargs
 
 
 def _restore_train_checkpoint(
@@ -1322,6 +1648,7 @@ def multistage_train(
     chebyshev=False,
     feature_map="separable",
     stage_correction_param_map=None,
+    extra_stage_corrections=None,
     x_stage2=None,
     training_samples_stage2=None,
     loss_components_fun_s1=None,
@@ -1331,6 +1658,7 @@ def multistage_train(
     gamma_g_s1=None,
     gamma_g_s2=None,
     gamma_g_eps=1e-12,
+    gamma_select_kwargs=None,
     adaptive_sample_accumulate=False,
     max_adaptive_samples=None,
     # progress & reproducibility params
@@ -1415,6 +1743,11 @@ def multistage_train(
         names or initializers. Custom entries extend the built-in defaults,
         including ``{"log_lambda_2": "lambda_2"}`` for Burgers-style signed
         physical diffusion corrections.
+    extra_stage_corrections : sequence or callable, optional
+        Additional correction specs for automatically constructing a
+        ``MultiCorrectionStage``. Each spec may be ``(epsilon, kappa)``, a dict
+        with ``epsilon``/``kappa`` or ``epsilon_scale``/``kappa_scale``, or a
+        callable ``spec(net, stage, eps_residual, eps_prediction, kappa)``.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
@@ -1430,6 +1763,9 @@ def multistage_train(
         residual and residual-gradient magnitudes.
     gamma_g_eps : float, optional
         Numerical floor for automatic ``gamma_g`` estimates.
+    gamma_select_kwargs : dict, optional
+        Options for automatic Algorithm-3-style gamma selection. Set
+        ``gamma_s1="auto"`` and/or ``gamma_s2="auto"`` to enable it.
     adaptive_sample_accumulate : bool, optional
         If True, adaptive collocation points accumulate instead of replacing
         the previous adaptive set.
@@ -1476,28 +1812,33 @@ def multistage_train(
         x_stage2 = x
     if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
-    if loss_components_fun_s1 is not None:
-        loss_fun_s1 = make_weighted_pde_loss(
-            loss_components_fun_s1,
-            gamma=gamma_s1,
-            gamma_g=gamma_g_s1,
-            gamma_g_eps=gamma_g_eps,
-        )
-    if loss_components_fun_s2 is not None:
-        loss_fun_s2 = make_weighted_pde_loss(
-            loss_components_fun_s2,
-            gamma=gamma_s2,
-            gamma_g=gamma_g_s2,
-            gamma_g_eps=gamma_g_eps,
-        )
+    if gamma_select_kwargs is None:
+        gamma_select_kwargs = {}
 
     adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
     residual_fun = residual_fun_s1
-    loss_fun = loss_fun_s1
+    loss_fun_base = loss_fun_s1
+    loss_components_fun = loss_components_fun_s1
+    gamma = gamma_s1
+    gamma_g = gamma_g_s1
     loss_histories = []
 
     for stage in range(n_stages):
+        loss_fun, _ = _resolve_loss_fun(
+            net,
+            loss_fun_base,
+            loss_components_fun,
+            x,
+            training_samples,
+            optimizer,
+            learning_rate,
+            gamma,
+            gamma_g,
+            gamma_g_eps,
+            gamma_select_kwargs,
+        )
+
         current_callback = None
         if benchmark_state is not None:
 
@@ -1590,27 +1931,41 @@ def multistage_train(
             stage,
             chebyshev=chebyshev,
         )
+        next_stage_x = x_stage2 if stage == 0 else x
+        _warn_if_training_samples_underresolved(
+            kappa,
+            next_stage_x,
+            frequency_samples_per_mode,
+            stage,
+            chebyshev=chebyshev,
+        )
 
         params = _stage_correction_params_or_none(
             getattr(net, "_params", None), stage_correction_param_map
         )
 
         key, subkey = jax.random.split(key)
-        net_kwargs_for_save = dict(
-            epsilon=eps_prediction,
-            kappa=kappa,
+        net, net_kwargs_for_save = _build_next_stage(
+            net,
+            params,
+            subkey,
+            activation,
+            eps_prediction,
+            kappa,
             width_size=width_size,
             depth=depth,
-            params_are_trainable=params is not None,
             chebyshev=chebyshev,
             feature_map=feature_map,
-        )
-        net = Stage2(
-            net, params=params, key=subkey, activation=activation, **net_kwargs_for_save
+            extra_stage_corrections=extra_stage_corrections,
+            stage=stage,
+            eps_residual=eps_residual,
         )
 
         residual_fun = residual_fun_s2
-        loss_fun = loss_fun_s2
+        loss_fun_base = loss_fun_s2
+        loss_components_fun = loss_components_fun_s2
+        gamma = gamma_s2
+        gamma_g = gamma_g_s2
         # Next stages will use same as stage 2 data currently.
         training_samples = training_samples_stage2
         x = x_stage2
@@ -1652,15 +2007,19 @@ def multistage_trust_region_train(
     chebyshev=False,
     feature_map="separable",
     stage_correction_param_map=None,
+    extra_stage_corrections=None,
     x_stage2=None,
     training_samples_stage2=None,
     loss_components_fun_s1=None,
     loss_components_fun_s2=None,
+    loss_residual_components_fun_s1=None,
+    loss_residual_components_fun_s2=None,
     gamma_s1=0.5,
     gamma_s2=0.5,
     gamma_g_s1=None,
     gamma_g_s2=None,
     gamma_g_eps=1e-12,
+    gamma_select_kwargs=None,
     adaptive_sample_accumulate=False,
     max_adaptive_samples=None,
     # Progress & reproducibility params
@@ -1767,14 +2126,23 @@ def multistage_trust_region_train(
         names or initializers. Custom entries extend the built-in defaults,
         including ``{"log_lambda_2": "lambda_2"}`` for Burgers-style signed
         physical diffusion corrections.
+    extra_stage_corrections : sequence or callable, optional
+        Additional correction specs for automatically constructing a
+        ``MultiCorrectionStage``. Each spec may be ``(epsilon, kappa)``, a dict
+        with ``epsilon``/``kappa`` or ``epsilon_scale``/``kappa_scale``, or a
+        callable ``spec(net, stage, eps_residual, eps_prediction, kappa)``.
     x_stage2 : tuple of jax.Array, optional
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
         Training data for stage 2 and beyond. Default is ``training_samples``.
     loss_components_fun_s1, loss_components_fun_s2 : callable, optional
         Component loss functions returning data/equation/(optional) gradient
-        losses. When supplied, they are wrapped using ``gamma`` and ``gamma_g``
-        for the LBFGS warmup scalar objective.
+        losses. When supplied, they are wrapped using ``gamma`` and ``gamma_g``.
+    loss_residual_components_fun_s1, loss_residual_components_fun_s2 : callable
+        Unreduced component residual functions returning
+        data/equation/(optional) gradient residual vectors. When supplied, they
+        are weighted consistently with the scalar component objective for the
+        Levenberg-Marquardt phase.
     gamma_s1, gamma_s2 : float, optional
         Equation-loss weights used with component loss functions.
     gamma_g_s1, gamma_g_s2 : float, optional
@@ -1783,6 +2151,9 @@ def multistage_trust_region_train(
         residual and residual-gradient magnitudes.
     gamma_g_eps : float, optional
         Numerical floor for automatic ``gamma_g`` estimates.
+    gamma_select_kwargs : dict, optional
+        Options for automatic Algorithm-3-style gamma selection. Set
+        ``gamma_s1="auto"`` and/or ``gamma_s2="auto"`` to enable it.
     adaptive_sample_accumulate : bool, optional
         If True, adaptive collocation points accumulate instead of replacing
         the previous adaptive set.
@@ -1825,29 +2196,49 @@ def multistage_trust_region_train(
         x_stage2 = x
     if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
-    if loss_components_fun_s1 is not None:
-        loss_fun_s1 = make_weighted_pde_loss(
-            loss_components_fun_s1,
-            gamma=gamma_s1,
-            gamma_g=gamma_g_s1,
-            gamma_g_eps=gamma_g_eps,
-        )
-    if loss_components_fun_s2 is not None:
-        loss_fun_s2 = make_weighted_pde_loss(
-            loss_components_fun_s2,
-            gamma=gamma_s2,
-            gamma_g=gamma_g_s2,
-            gamma_g_eps=gamma_g_eps,
-        )
+    if gamma_select_kwargs is None:
+        gamma_select_kwargs = {}
 
     adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
     residual_fun = residual_fun_s1
-    loss_fun = loss_fun_s1
-    loss_fun_unreduced = loss_fun_s1_unreduced
+    loss_fun_base = loss_fun_s1
+    loss_fun_unreduced_base = loss_fun_s1_unreduced
+    loss_components_fun = loss_components_fun_s1
+    loss_residual_components_fun = loss_residual_components_fun_s1
+    gamma = gamma_s1
+    gamma_g = gamma_g_s1
     linear_solver, linear_solver_next = linear_solver
 
     for stage in range(n_stages):
+        loss_fun, selected_gamma = _resolve_loss_fun(
+            net,
+            loss_fun_base,
+            loss_components_fun,
+            x,
+            training_samples,
+            optax.lbfgs,
+            learning_rate,
+            gamma,
+            gamma_g,
+            gamma_g_eps,
+            gamma_select_kwargs,
+        )
+        loss_fun_unreduced = _resolve_unreduced_loss_fun(
+            loss_fun_unreduced_base,
+            loss_residual_components_fun,
+            selected_gamma,
+            gamma_g,
+            gamma_g_eps,
+        )
+        if loss_components_fun is not None and loss_residual_components_fun is None:
+            warnings.warn(
+                "Scalar component loss weights do not alter the trust-region "
+                "unreduced residual. Pass loss_residual_components_fun_s1/s2 "
+                "to apply gamma/gamma_g to the Levenberg-Marquardt phase.",
+                UserWarning,
+            )
+
         current_callback = None
         if benchmark_state is not None:
 
@@ -1917,7 +2308,7 @@ def multistage_trust_region_train(
         )
 
         linear_solver = linear_solver_next
-        loss_fun_unreduced = loss_fun_s2_unreduced
+        loss_fun_unreduced_base = loss_fun_s2_unreduced
         rtol *= rtol_decay_factor
         atol *= atol_decay_factor
 
@@ -1966,27 +2357,42 @@ def multistage_trust_region_train(
             stage,
             chebyshev=chebyshev,
         )
+        next_stage_x = x_stage2 if stage == 0 else x
+        _warn_if_training_samples_underresolved(
+            kappa,
+            next_stage_x,
+            frequency_samples_per_mode,
+            stage,
+            chebyshev=chebyshev,
+        )
 
         params = _stage_correction_params_or_none(
             getattr(net, "_params", None), stage_correction_param_map
         )
 
         key, subkey = jax.random.split(key)
-        net_kwargs_for_save = dict(
-            epsilon=eps_prediction,
-            kappa=kappa,
+        net, net_kwargs_for_save = _build_next_stage(
+            net,
+            params,
+            subkey,
+            activation,
+            eps_prediction,
+            kappa,
             width_size=width_size,
             depth=depth,
-            params_are_trainable=params is not None,
             chebyshev=chebyshev,
             feature_map=feature_map,
-        )
-        net = Stage2(
-            net, params=params, key=subkey, activation=activation, **net_kwargs_for_save
+            extra_stage_corrections=extra_stage_corrections,
+            stage=stage,
+            eps_residual=eps_residual,
         )
 
         residual_fun = residual_fun_s2
-        loss_fun = loss_fun_s2
+        loss_fun_base = loss_fun_s2
+        loss_components_fun = loss_components_fun_s2
+        loss_residual_components_fun = loss_residual_components_fun_s2
+        gamma = gamma_s2
+        gamma_g = gamma_g_s2
         # Next stages will use same as stage 2 data currently.
         training_samples = training_samples_stage2
         x = x_stage2

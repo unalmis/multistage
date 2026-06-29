@@ -18,6 +18,7 @@ from multistage._multistage import (
     _train,
     _trainable_params_or_none,
     _trust_region_train,
+    select_gamma,
 )
 
 
@@ -1023,6 +1024,271 @@ def test_multistage_train_warns_when_estimated_frequency_is_underresolved(
         )
 
     assert len(trained_nets) == 2
+
+
+def test_select_gamma_increases_weight_for_slow_equation_convergence():
+    """Algorithm-3-style selection should react when equation loss is neglected."""
+
+    class TwoLossModel(eqx.Module):
+        in_size: int
+        data_param: jax.Array
+        equation_param: jax.Array
+
+    net = TwoLossModel(
+        in_size=1,
+        data_param=jnp.array(1.0),
+        equation_param=jnp.array(1.0),
+    )
+
+    def component_fun(model, x_data, u_data, x_col):
+        del x_data, u_data, x_col
+        return {
+            "data": model.data_param**2,
+            "equation": model.equation_param**2,
+        }
+
+    gamma = select_gamma(
+        net,
+        component_fun,
+        [jnp.array([0.0])],
+        jnp.zeros(1),
+        optax.sgd,
+        0.1,
+        initial_gamma=0.1,
+        steps=5,
+        max_trials=2,
+    )
+
+    assert gamma > 0.1
+
+
+def test_multistage_train_auto_gamma_wraps_component_loss(monkeypatch):
+    """gamma='auto' should select a fixed gamma before main training."""
+    calls = []
+
+    def fake_select_gamma(*args, **kwargs):
+        del args, kwargs
+        calls.append(True)
+        return 0.25
+
+    def fake_train(
+        net,
+        loss_fun,
+        x,
+        training_samples,
+        optimizer,
+        steps,
+        *,
+        return_loss_history=True,
+        **kwargs,
+    ):
+        del optimizer, steps, kwargs
+        x_col = [None] * net.in_size
+        np.testing.assert_allclose(loss_fun(net, *x, training_samples, *x_col), 1.5)
+        return (net, []) if return_loss_history else net
+
+    monkeypatch.setattr(multistage_module, "select_gamma", fake_select_gamma)
+    monkeypatch.setattr(multistage_module, "_train", fake_train)
+    monkeypatch.setattr(multistage_module, "save", lambda *args, **kwargs: None)
+
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+    )
+
+    def residual_fun(model, x):
+        del model
+        return x, x
+
+    def loss_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return jnp.array(0.0)
+
+    def component_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return {"data": jnp.array(1.0), "equation": jnp.array(3.0)}
+
+    multistage_module.multistage_train(
+        net,
+        residual_fun,
+        residual_fun,
+        loss_fun,
+        loss_fun,
+        [jnp.linspace(0.0, 1.0, 4)],
+        jnp.zeros(4),
+        optimizer=optax.sgd,
+        steps=1,
+        learning_rate=0.0,
+        adaptive_sample_freq=0,
+        n_stages=1,
+        loss_components_fun_s1=component_fun,
+        gamma_s1="auto",
+    )
+
+    assert calls == [True]
+
+
+def test_multistage_trust_region_weights_unreduced_component_residuals(monkeypatch):
+    """Trust-region scalar and unreduced component losses should share weights."""
+    seen = []
+
+    def fake_train(
+        net,
+        loss_fun,
+        x,
+        training_samples,
+        optimizer,
+        steps,
+        *,
+        return_loss_history=True,
+        **kwargs,
+    ):
+        del optimizer, steps, kwargs
+        x_col = [None] * net.in_size
+        np.testing.assert_allclose(loss_fun(net, *x, training_samples, *x_col), 5.25)
+        return (net, []) if return_loss_history else net
+
+    def fake_trust_region_train(
+        net,
+        loss_fun_unreduced,
+        x,
+        training_samples,
+        steps,
+        **kwargs,
+    ):
+        del steps, kwargs
+        x_col = [None] * net.in_size
+        residuals = loss_fun_unreduced(net, *x, training_samples, *x_col)
+        np.testing.assert_allclose(jnp.sum(residuals**2), 5.25)
+        seen.append(True)
+        return net
+
+    monkeypatch.setattr(multistage_module, "_train", fake_train)
+    monkeypatch.setattr(
+        multistage_module, "_trust_region_train", fake_trust_region_train
+    )
+    monkeypatch.setattr(multistage_module, "save", lambda *args, **kwargs: None)
+
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+    )
+
+    def residual_fun(model, x):
+        del model
+        return x, x
+
+    def loss_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return jnp.array(0.0)
+
+    def loss_fun_unreduced(model, x, y, x_col):
+        del model, x, y, x_col
+        return jnp.array([0.0])
+
+    def component_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return {"data": jnp.array(4.0), "equation": jnp.array(9.0)}
+
+    def residual_component_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return {"data": jnp.array([2.0]), "equation": jnp.array([3.0])}
+
+    multistage_module.multistage_trust_region_train(
+        net,
+        residual_fun,
+        residual_fun,
+        loss_fun,
+        loss_fun,
+        loss_fun_unreduced,
+        loss_fun_unreduced,
+        [jnp.linspace(0.0, 1.0, 4)],
+        jnp.zeros(4),
+        steps=1,
+        lbfgs_steps=1,
+        adaptive_sample_freq=0,
+        n_stages=1,
+        loss_components_fun_s1=component_fun,
+        loss_residual_components_fun_s1=residual_component_fun,
+        gamma_s1=0.25,
+    )
+
+    assert seen == [True]
+
+
+def test_multistage_train_can_build_multi_correction_stage(monkeypatch):
+    """Automatic stage construction should support extra correction networks."""
+    trained_nets = []
+
+    def fake_train(
+        net,
+        loss_fun,
+        x,
+        training_samples,
+        optimizer,
+        steps,
+        *,
+        return_loss_history=True,
+        **kwargs,
+    ):
+        del loss_fun, x, training_samples, optimizer, steps, kwargs
+        trained_nets.append(net)
+        return (net, []) if return_loss_history else net
+
+    def fake_stats(*args, **kwargs):
+        del args, kwargs
+        return jnp.array(1.0), jnp.array(0.25), jnp.array([2.0])
+
+    monkeypatch.setattr(multistage_module, "_train", fake_train)
+    monkeypatch.setattr(multistage_module, "stats", fake_stats)
+    monkeypatch.setattr(multistage_module, "save", lambda *args, **kwargs: None)
+
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+    )
+
+    def residual_fun(model, x):
+        del model
+        return x, x
+
+    def loss_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return jnp.array(0.0)
+
+    multistage_module.multistage_train(
+        net,
+        residual_fun,
+        residual_fun,
+        loss_fun,
+        loss_fun,
+        [jnp.linspace(0.0, 1.0, 4)],
+        jnp.zeros(4),
+        optimizer=optax.sgd,
+        steps=1,
+        learning_rate=0.0,
+        adaptive_sample_freq=0,
+        n_stages=2,
+        extra_stage_corrections=(
+            {"epsilon": jnp.array(0.05), "kappa": jnp.array([1.0])},
+        ),
+    )
+
+    assert len(trained_nets) == 2
+    assert isinstance(trained_nets[1], MultiCorrectionStage)
+    assert len(trained_nets[1].epsilons) == 2
 
 
 def test_multistage_train_uses_zero_inverse_param_corrections(monkeypatch):

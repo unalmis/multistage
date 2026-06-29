@@ -13,10 +13,12 @@ from multistage._utils import (
     generate_concentrated_data,
     generate_data,
     make_weighted_pde_loss,
+    make_weighted_pde_residual_loss,
     print_errors,
     stats,
     stats_chebyshev,
     weighted_pde_loss,
+    weighted_pde_residuals,
 )
 
 
@@ -190,6 +192,55 @@ def test_weighted_pde_loss_estimates_gamma_g_from_components():
 
     loss_fun = make_weighted_pde_loss(component_fun, gamma=0.25)
     np.testing.assert_allclose(loss_fun(None, None, None), 1.75)
+
+
+def test_weighted_pde_residuals_match_scalar_component_loss():
+    """Unreduced residual weighting should match the scalar mean-square loss."""
+    components = {
+        "data": jnp.array([1.0, 3.0]),
+        "equation": jnp.array([2.0, 4.0, 6.0]),
+        "gradient": jnp.array([1.0, 2.0]),
+    }
+    gamma = 0.25
+    gamma_g = 0.5
+    weighted = weighted_pde_residuals(components, gamma=gamma, gamma_g=gamma_g)
+
+    scalar = weighted_pde_loss(
+        {
+            "data": jnp.mean(components["data"] ** 2),
+            "equation": jnp.mean(components["equation"] ** 2),
+            "gradient": jnp.mean(components["gradient"] ** 2),
+        },
+        gamma=gamma,
+        gamma_g=gamma_g,
+    )
+    np.testing.assert_allclose(jnp.sum(weighted**2), scalar)
+
+    def component_fun(model, x):
+        del model, x
+        return components
+
+    loss_fun = make_weighted_pde_residual_loss(
+        component_fun, gamma=gamma, gamma_g=gamma_g
+    )
+    np.testing.assert_allclose(loss_fun(None, None), weighted)
+
+
+def test_automatic_gamma_g_estimate_is_not_differentiated():
+    """Automatic gamma_g should act as a fixed weight during one loss eval."""
+
+    def loss(losses):
+        equation_loss, gradient_loss = losses
+        return weighted_pde_loss(
+            (jnp.array(0.0), equation_loss, gradient_loss),
+            gamma=1.0,
+            gamma_g=None,
+        )
+
+    grads = jax.grad(loss)(jnp.array([2.0, 8.0]))
+
+    np.testing.assert_allclose(grads[0], 1.0)
+    np.testing.assert_allclose(grads[1], 0.25)
 
 
 @pytest.mark.parametrize(
