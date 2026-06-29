@@ -9,11 +9,14 @@ from multistage._utils import (
     _beta_rms,
     _operator_scale,
     adaptive_sample,
+    estimate_gamma_g,
     generate_concentrated_data,
     generate_data,
+    make_weighted_pde_loss,
     print_errors,
     stats,
     stats_chebyshev,
+    weighted_pde_loss,
 )
 
 
@@ -113,6 +116,80 @@ def test_epsilon_estimate_uses_physical_coordinate_scaling():
         eps_residual / (2.0 * kappa[0]),
         rtol=1e-12,
     )
+
+
+def test_stats_allows_residual_dim_different_from_network_output_dim():
+    """PDE systems may have more residual equations than solution components."""
+    net = _DummyModel(-1.0, 1.0, in_size=1, out_size=1)
+    params, static = eqx.partition(net, eqx.is_inexact_array)
+
+    def residual_1d(model, x):
+        del model
+        residual = jnp.stack(
+            [0.1 * jnp.sin(3 * jnp.pi * x), jnp.sin(5 * jnp.pi * x)],
+            axis=-1,
+        )
+        return jnp.zeros_like(x), residual
+
+    eps_residual, eps_prediction, kappa = stats(
+        params,
+        static,
+        residual_1d,
+        num_samples=(128,),
+        order=(1,),
+    )
+
+    np.testing.assert_allclose(kappa, jnp.array([5 * jnp.pi]), rtol=1e-12)
+    assert jnp.isfinite(eps_residual)
+    assert jnp.isfinite(eps_prediction)
+
+
+def test_stats_chebyshev_allows_residual_dim_different_from_output_dim():
+    """Chebyshev stats should infer residual dimension from residual_fun."""
+    net = _DummyModel(-1.0, 1.0, in_size=1, out_size=1)
+    params, static = eqx.partition(net, eqx.is_inexact_array)
+
+    def residual_1d(model, x):
+        del model
+        residual = jnp.stack(
+            [
+                0.1 * jnp.cos(4 * jnp.arccos(x)),
+                jnp.cos(7 * jnp.arccos(x)),
+            ],
+            axis=-1,
+        )
+        return jnp.zeros_like(x), residual
+
+    eps_residual, eps_prediction, kappa = stats_chebyshev(
+        params,
+        static,
+        residual_1d,
+        num_samples=(64,),
+        order=(1,),
+    )
+
+    np.testing.assert_allclose(kappa, jnp.array([7]))
+    assert jnp.isfinite(eps_residual)
+    assert jnp.isfinite(eps_prediction)
+
+
+def test_weighted_pde_loss_estimates_gamma_g_from_components():
+    """Component losses should expose gamma and gamma_g weighting."""
+    components = {
+        "data": jnp.array(1.0),
+        "residual": jnp.array(2.0),
+        "gradient": jnp.array(8.0),
+    }
+
+    np.testing.assert_allclose(estimate_gamma_g(2.0, 8.0), 0.25)
+    np.testing.assert_allclose(weighted_pde_loss(components, gamma=0.25), 1.75)
+
+    def component_fun(model, x, y):
+        del model, x, y
+        return components
+
+    loss_fun = make_weighted_pde_loss(component_fun, gamma=0.25)
+    np.testing.assert_allclose(loss_fun(None, None, None), 1.75)
 
 
 @pytest.mark.parametrize(

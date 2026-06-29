@@ -307,6 +307,95 @@ def count_params(model):
     return count
 
 
+def estimate_gamma_g(equation_loss, gradient_loss, eps=1e-12):
+    """Estimate the gPINN residual-gradient weight from loss magnitudes.
+
+    The multistage PINN scaling in the paper balances residual-gradient terms
+    against the residual loss using ``gamma_g ~ |r|^2 / |grad r|^2``. This
+    helper accepts already-reduced loss magnitudes and returns a finite scalar
+    weight, using zero when the gradient loss is numerically absent.
+    """
+    equation_loss = jnp.asarray(equation_loss)
+    gradient_loss = jnp.asarray(gradient_loss)
+    eps = jnp.asarray(eps, dtype=jnp.result_type(equation_loss, gradient_loss))
+    return jnp.where(
+        gradient_loss > eps,
+        equation_loss / jnp.maximum(gradient_loss, eps),
+        jnp.zeros((), dtype=jnp.result_type(equation_loss, gradient_loss)),
+    )
+
+
+def _component_from_mapping(components, names):
+    for name in names:
+        if name in components:
+            return components[name]
+    raise KeyError(f"Loss components must include one of {names}.")
+
+
+def _split_pde_loss_components(components):
+    """Return data, equation, and optional residual-gradient loss components."""
+    if isinstance(components, dict):
+        data_loss = _component_from_mapping(
+            components, ("data", "data_loss", "boundary", "boundary_loss")
+        )
+        equation_loss = _component_from_mapping(
+            components,
+            ("equation", "equation_loss", "residual", "residual_loss", "pde_loss"),
+        )
+        gradient_loss = None
+        for name in (
+            "gradient",
+            "gradient_loss",
+            "residual_gradient",
+            "residual_gradient_loss",
+            "gpinn_loss",
+        ):
+            if name in components:
+                gradient_loss = components[name]
+                break
+        return data_loss, equation_loss, gradient_loss
+
+    data_loss, equation_loss, *rest = components
+    if len(rest) > 1:
+        raise ValueError(
+            "PDE loss components must be (data, equation) or "
+            "(data, equation, residual_gradient)."
+        )
+    gradient_loss = rest[0] if rest else None
+    return data_loss, equation_loss, gradient_loss
+
+
+def weighted_pde_loss(components, gamma=0.5, gamma_g=None, gamma_g_eps=1e-12):
+    """Combine decomposed PDE loss components into a scalar PINN objective.
+
+    ``components`` may be a mapping with data/equation/gradient keys or a tuple
+    ``(data_loss, equation_loss[, residual_gradient_loss])``. When a gradient
+    component is present and ``gamma_g`` is not supplied, it is estimated from
+    the residual and residual-gradient magnitudes.
+    """
+    data_loss, equation_loss, gradient_loss = _split_pde_loss_components(components)
+    pde_loss = equation_loss
+    if gradient_loss is not None:
+        if gamma_g is None:
+            gamma_g = estimate_gamma_g(equation_loss, gradient_loss, eps=gamma_g_eps)
+        pde_loss = pde_loss + gamma_g * gradient_loss
+    return (1.0 - gamma) * data_loss + gamma * pde_loss
+
+
+def make_weighted_pde_loss(component_fun, gamma=0.5, gamma_g=None, gamma_g_eps=1e-12):
+    """Wrap a component loss function as a scalar weighted PDE loss."""
+
+    def loss_fun(model, *args):
+        return weighted_pde_loss(
+            component_fun(model, *args),
+            gamma=gamma,
+            gamma_g=gamma_g,
+            gamma_g_eps=gamma_g_eps,
+        )
+
+    return loss_fun
+
+
 def _operator_orders(order, in_size):
     """Return derivative multi-indices for terms in the linearized operator."""
     order = np.asarray(order, dtype=int)
@@ -399,6 +488,12 @@ def _spectral_peak_frequency(f, num_samples):
     return jnp.asarray([compute_freq(i) for i in range(len(num_samples))])
 
 
+def _reshape_residual_for_frequency(f, num_samples):
+    """Reshape a residual grid without assuming it matches network output size."""
+    f = jnp.asarray(f)
+    return f.reshape(*num_samples, -1)
+
+
 @functools.partial(
     jit,
     static_argnames=[
@@ -465,7 +560,7 @@ def stats(
 
     """
     net = eqx.combine(params, static)
-    in_size, out_size = net.in_size, net.out_size
+    in_size = net.in_size
     lb, ub = net.lb, net.ub
 
     if len(num_samples) == 1:
@@ -484,7 +579,7 @@ def stats(
         beta = beta_fun(net, *mesh)
         beta = _beta_rms(beta, _operator_orders(order, in_size).shape[0])
 
-    f = f.reshape(*num_samples, out_size)
+    f = _reshape_residual_for_frequency(f, num_samples)
 
     # We support anisotropic frequency dependence in the input variables,
     # but we assume each dimension of the output of the network is isotropic in
@@ -561,7 +656,7 @@ def stats_chebyshev(
 
     """
     net = eqx.combine(params, static)
-    in_size, out_size = net.in_size, net.out_size
+    in_size = net.in_size
     lb, ub = net.lb, net.ub
 
     if len(num_samples) == 1:
@@ -577,7 +672,7 @@ def stats_chebyshev(
         beta = beta_fun(net, *mesh)
         beta = _beta_rms(beta, _operator_orders(order, in_size).shape[0])
 
-    f = f.reshape(*num_samples, out_size)
+    f = _reshape_residual_for_frequency(f, num_samples)
 
     # We support anisotropic frequency dependence in the input variables,
     # but we assume each dimension of the output of the network is isotropic in
@@ -587,7 +682,9 @@ def stats_chebyshev(
         cheb = cheb_from_dct(dct(f, type=2, axis=i), i)
         cheb = jnp.moveaxis(cheb, i, 0)
         cheb = cheb.at[0].set(0.0)
-        return jnp.argmax(jnp.abs(cheb), axis=0).mean()
+        magnitude = jnp.abs(cheb)
+        magnitude = magnitude.reshape((magnitude.shape[0], -1)).mean(axis=1)
+        return jnp.argmax(magnitude)
 
     kappa = jnp.asarray([compute_freq(i) for i in range(in_size)])
     assert kappa.shape == (in_size,)

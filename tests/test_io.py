@@ -10,9 +10,10 @@ from paramax import unwrap
 
 import multistage._multistage as multistage_module
 import multistage._plot as plot_module
-from multistage import Stage1, Stage2, load, plot_loss, save
+from multistage import MultiCorrectionStage, Stage1, Stage2, load, plot_loss, save
 from multistage._multistage import (
     _feature_scale_from_frequency,
+    _merge_adaptive_samples,
     _stage_correction_params_or_none,
     _train,
     _trainable_params_or_none,
@@ -157,6 +158,40 @@ def test_stage2_get_param_is_stage_local():
     np.testing.assert_allclose(s2.get_param("lambda_1"), jnp.array([3.0]))
     assert s2.get_param("log_lambda_2", None) is None
     assert s2.get_param("missing", 4.0) == 4.0
+
+
+def test_multi_correction_stage_sums_all_corrections():
+    """A multi-correction stage should expose Stage2-compatible behavior."""
+    key = jax.random.PRNGKey(0)
+    s1 = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=3,
+        depth=2,
+        key=key,
+    )
+    stage = MultiCorrectionStage(
+        s1,
+        epsilons=jnp.array([0.1, 0.2]),
+        kappas=jnp.array([[2.0], [1.0]]),
+        width_size=3,
+        depth=2,
+        key=key,
+    )
+    x = jnp.array(0.3)
+
+    expected = (
+        s1(x)
+        + 0.1 * stage.compute_correction(0, x)
+        + 0.2 * stage.compute_correction(1, x)
+    )
+    np.testing.assert_allclose(stage(x), expected)
+    np.testing.assert_allclose(stage.compute_s2(x), stage.compute_correction(0, x))
+    assert len(stage.epsilons) == 2
+    np.testing.assert_allclose(stage.epsilons[0], stage.epsilon)
+    eqx.partition(stage, eqx.is_inexact_array)
 
 
 def test_stage2_allows_transformed_correction_params():
@@ -395,6 +430,20 @@ def test_train_uses_initial_adaptive_sample():
     assert calls == [True]
 
 
+def test_merge_adaptive_samples_can_accumulate_with_cap():
+    """RAR-style adaptive samples should accumulate when requested."""
+    current = [jnp.array([0.0, 1.0]), jnp.array([2.0, 3.0])]
+    new = [jnp.array([4.0, 5.0]), jnp.array([6.0, 7.0])]
+
+    replaced = _merge_adaptive_samples(current, new, accumulate=False)
+    np.testing.assert_allclose(replaced[0], new[0])
+    np.testing.assert_allclose(replaced[1], new[1])
+
+    accumulated = _merge_adaptive_samples(current, new, accumulate=True, max_samples=3)
+    np.testing.assert_allclose(accumulated[0], jnp.array([1.0, 4.0, 5.0]))
+    np.testing.assert_allclose(accumulated[1], jnp.array([3.0, 6.0, 7.0]))
+
+
 def test_train_print_every_zero_only_logs_final():
     """Disabling periodic logs should not break the training loop."""
     key = jax.random.PRNGKey(0)
@@ -483,6 +532,7 @@ def test_train_checkpoints_loss_ref(monkeypatch):
         print_every=0,
         checkpoint_path="fake",
         checkpoint_every=1,
+        resume=True,
     )
 
     assert saved
@@ -552,6 +602,7 @@ def test_train_resume_checkpoints_first_new_step(monkeypatch):
         print_every=0,
         checkpoint_path="fake",
         checkpoint_every=1,
+        resume=True,
     )
 
     assert saved == [2]
@@ -674,6 +725,7 @@ def test_trust_region_resume_uses_completed_step_count(monkeypatch):
         adaptive_sample_freq=0,
         checkpoint_path="fake",
         checkpoint_every=2,
+        resume=True,
     )
 
     assert solve_steps == [2, 1]
@@ -841,6 +893,136 @@ def test_multistage_adaptive_defaults_follow_stage_data(monkeypatch):
     )
 
     assert calls == [(40, 2), (80, 4)]
+
+
+def test_multistage_train_stops_when_residual_is_below_tolerance(monkeypatch):
+    """Tiny residual estimates should not create noise-fitting later stages."""
+    trained_nets = []
+
+    def fake_train(
+        net,
+        loss_fun,
+        x,
+        training_samples,
+        optimizer,
+        steps,
+        *,
+        return_loss_history=True,
+        **kwargs,
+    ):
+        del loss_fun, x, training_samples, optimizer, steps, kwargs
+        trained_nets.append(net)
+        return (net, []) if return_loss_history else net
+
+    def fake_stats(*args, **kwargs):
+        del args, kwargs
+        return jnp.array(1e-10), jnp.array(1e-10), jnp.array([2.0])
+
+    monkeypatch.setattr(multistage_module, "_train", fake_train)
+    monkeypatch.setattr(multistage_module, "stats", fake_stats)
+    monkeypatch.setattr(multistage_module, "save", lambda *args, **kwargs: None)
+
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+    )
+
+    def residual_fun(model, x):
+        del model
+        return x, x
+
+    def loss_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return jnp.array(0.0)
+
+    multistage_module.multistage_train(
+        net,
+        residual_fun,
+        residual_fun,
+        loss_fun,
+        loss_fun,
+        [jnp.linspace(0.0, 1.0, 4)],
+        jnp.zeros(4),
+        optimizer=optax.sgd,
+        steps=1,
+        learning_rate=0.0,
+        adaptive_sample_freq=0,
+        n_stages=3,
+        residual_tol=1e-8,
+    )
+
+    assert len(trained_nets) == 1
+
+
+def test_multistage_train_warns_when_estimated_frequency_is_underresolved(
+    monkeypatch,
+):
+    """Estimated correction frequencies should be checked against sample counts."""
+    trained_nets = []
+
+    def fake_train(
+        net,
+        loss_fun,
+        x,
+        training_samples,
+        optimizer,
+        steps,
+        *,
+        return_loss_history=True,
+        **kwargs,
+    ):
+        del loss_fun, x, training_samples, optimizer, steps, kwargs
+        trained_nets.append(net)
+        return (net, []) if return_loss_history else net
+
+    def fake_stats(*args, **kwargs):
+        del args, kwargs
+        return jnp.array(1.0), jnp.array(0.25), jnp.array([100.0])
+
+    monkeypatch.setattr(multistage_module, "_train", fake_train)
+    monkeypatch.setattr(multistage_module, "stats", fake_stats)
+    monkeypatch.setattr(multistage_module, "save", lambda *args, **kwargs: None)
+
+    net = Stage1(
+        jnp.array([0.0]),
+        jnp.array([1.0]),
+        in_size=1,
+        out_size=1,
+        width_size=2,
+        depth=1,
+    )
+
+    def residual_fun(model, x):
+        del model
+        return x, x
+
+    def loss_fun(model, x, y, x_col):
+        del model, x, y, x_col
+        return jnp.array(0.0)
+
+    with pytest.warns(UserWarning, match="under-resolved"):
+        multistage_module.multistage_train(
+            net,
+            residual_fun,
+            residual_fun,
+            loss_fun,
+            loss_fun,
+            [jnp.linspace(0.0, 1.0, 4)],
+            jnp.zeros(4),
+            optimizer=optax.sgd,
+            steps=1,
+            learning_rate=0.0,
+            adaptive_sample_freq=0,
+            n_stages=2,
+            num_samples_for_epsilon=(12,),
+            frequency_samples_per_mode=6.0,
+        )
+
+    assert len(trained_nets) == 2
 
 
 def test_multistage_train_uses_zero_inverse_param_corrections(monkeypatch):

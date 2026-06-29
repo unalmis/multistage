@@ -20,6 +20,7 @@ from ._io_utils import _ParamContainer, checkpoint_manager, save
 from ._utils import (
     adaptive_sample,
     is_not_trainable,
+    make_weighted_pde_loss,
     partition,
     rescale,
     stats,
@@ -153,6 +154,35 @@ def _safe_loss_ref(loss_ref):
         loss_ref,
         jnp.ones((), dtype=loss_ref.dtype),
     )
+
+
+def _as_tuple(value):
+    """Normalize scalar/list constructor values for multi-correction stages."""
+    if isinstance(value, (tuple, list)):
+        return tuple(value)
+    value = jnp.asarray(value)
+    if value.ndim == 0:
+        return (value,)
+    return tuple(value[i] for i in range(value.shape[0]))
+
+
+def _as_kappa_tuple(kappas, in_size):
+    """Normalize one or more kappa vectors."""
+    if isinstance(kappas, (tuple, list)):
+        out = tuple(jnp.asarray(kappa) for kappa in kappas)
+    else:
+        kappas = jnp.asarray(kappas)
+        if kappas.ndim == 1:
+            out = (kappas,)
+        elif kappas.ndim == 2:
+            out = tuple(kappas[i] for i in range(kappas.shape[0]))
+        else:
+            raise ValueError("kappas must have shape (in_size,) or (n, in_size).")
+
+    for kappa in out:
+        if kappa.shape != (in_size,):
+            raise ValueError("Each kappa must have shape (in_size,).")
+    return out
 
 
 class Stage1(eqx.Module):
@@ -499,6 +529,145 @@ class Stage2(eqx.Module):
         self.s1.print_params()
 
 
+class MultiCorrectionStage(eqx.Module):
+    """A stage that adds multiple correction networks to one frozen base stage.
+
+    This is useful for forward/inverse PDE solves where the next correction is
+    expected to contain more than one scale, for example a high-frequency PDE
+    residual correction and a lower-frequency parameter-error correction.
+    """
+
+    _corrections: tuple
+    _params: _ParamContainer
+
+    def __init__(
+        self,
+        s1,
+        epsilons,
+        kappas,
+        width_size=20,
+        depth=4,
+        activation=jnp.tanh,
+        params=None,
+        params_are_trainable=False,
+        key=None,
+        *,
+        chebyshev=False,
+        feature_map="separable",
+        **kwargs,
+    ):
+        epsilons = _as_tuple(epsilons)
+        kappas = _as_kappa_tuple(kappas, s1.in_size)
+        if len(epsilons) != len(kappas):
+            raise ValueError("epsilons and kappas must describe the same count.")
+        if len(epsilons) < 2:
+            raise ValueError("Use Stage2 for a single correction network.")
+
+        if key is None:
+            key = jax.random.PRNGKey(42)
+        keys = jax.random.split(key, len(epsilons))
+        self._corrections = tuple(
+            Stage2(
+                s1,
+                epsilon=epsilon,
+                kappa=kappa,
+                width_size=width_size,
+                depth=depth,
+                activation=activation,
+                params=None,
+                params_are_trainable=False,
+                key=stage_key,
+                chebyshev=chebyshev,
+                feature_map=feature_map,
+                **kwargs,
+            )
+            for epsilon, kappa, stage_key in zip(epsilons, kappas, keys)
+        )
+        self._params = _coerce_params(params, params_are_trainable)
+
+    @property
+    def s1(self):
+        """Return the frozen previous stage network."""
+        return self._corrections[0].s1
+
+    @property
+    def params(self):
+        """Params for this stage."""
+        return unwrap(self._params)
+
+    @property
+    def epsilon(self):
+        """Estimated magnitude scale of the first correction."""
+        return self._corrections[0].epsilon
+
+    @property
+    def epsilons(self):
+        """Estimated magnitude scales for all corrections."""
+        return tuple(correction.epsilon for correction in self._corrections)
+
+    @property
+    def kappa(self):
+        """Estimated dominant frequency of the first correction."""
+        return self._corrections[0].kappa
+
+    @property
+    def kappas(self):
+        """Estimated dominant frequencies for all corrections."""
+        return tuple(correction.kappa for correction in self._corrections)
+
+    @property
+    def in_size(self):
+        """Number of input dimensions."""
+        return self.s1.in_size
+
+    @property
+    def out_size(self):
+        """Number of output dimensions."""
+        return self.s1.out_size
+
+    @property
+    def lb(self):
+        """Lower bound of input coordinates."""
+        return self.s1.lb
+
+    @property
+    def ub(self):
+        """Upper bound of input coordinates."""
+        return self.s1.ub
+
+    def __call__(self, *args):
+        """Compute the previous stage plus all correction networks."""
+        out = self.s1(*args)
+        for correction in self._corrections:
+            out = out + correction.epsilon * correction.compute_s2(*args)
+        return out
+
+    def compute_correction(self, index, *args):
+        """Compute one unscaled correction network."""
+        return self._corrections[index].compute_s2(*args)
+
+    def compute_s2(self, *args):
+        """Compute the first unscaled correction for Stage2-compatible code."""
+        return self.compute_correction(0, *args)
+
+    def get_param(self, key, default=None):
+        """Return ``self.params["key"]`` if it exists and is not None else default."""
+        val = self.params.get(key, default)
+        return default if val is None else val
+
+    def print_params(self):
+        """Print the params of this network."""
+        print(f"    Current params: {self.params}")
+
+    def print_frozen_params(self):
+        """Print the frozen parameters of this network."""
+        print(
+            "    Current values for (epsilon, kappa) = "
+            f"{tuple(zip(self.epsilons, self.kappas))}."
+        )
+        self.s1.print_params()
+
+
 def _is_multiple_or_last(step, multiple, last):
     if multiple <= 0:
         return step == (last - 1)
@@ -517,6 +686,59 @@ def _fill_lask_k_buffer(last_k_loss, loss_history):
         steps = np.arange(loss_history.size - n_restore, loss_history.size)
         last_k_loss[steps % last_k_loss.size] = loss_history[-n_restore:]
     return last_k_loss
+
+
+def _merge_adaptive_samples(current, new, accumulate=False, max_samples=None):
+    """Return the active adaptive samples for the next optimizer step."""
+    if not accumulate or current[0] is None:
+        merged = new
+    else:
+        merged = [jnp.concatenate((old, new_i)) for old, new_i in zip(current, new)]
+
+    if max_samples is not None:
+        if max_samples <= 0:
+            raise ValueError("max_adaptive_samples must be positive or None.")
+        merged = [samples[-max_samples:] for samples in merged]
+    return merged
+
+
+def _checkpoint_stage_path(checkpoint_dir, name):
+    """Return a stage checkpoint path or None when checkpointing is disabled."""
+    if checkpoint_dir is None:
+        return None
+    return os.path.join(checkpoint_dir, name)
+
+
+def _expanded_num_samples(num_samples, in_size):
+    if len(num_samples) == 1:
+        return (num_samples[0],) * in_size
+    return tuple(num_samples)
+
+
+def _warn_if_frequency_underresolved(
+    kappa, num_samples, samples_per_mode, stage, *, chebyshev=False
+):
+    if samples_per_mode is None:
+        return
+    num_samples = np.asarray(num_samples, dtype=float)
+    kappa = np.asarray(kappa, dtype=float)
+    mode_index = kappa if chebyshev else kappa / np.pi
+    unresolved = mode_index > (num_samples / samples_per_mode)
+    if np.any(unresolved):
+        axes = np.where(unresolved)[0].tolist()
+        warnings.warn(
+            "Estimated correction frequency may be under-resolved for "
+            f"stage {stage + 1}: axes={axes}, modes={mode_index[unresolved]}, "
+            f"samples={num_samples[unresolved]}. Increase "
+            "num_samples_for_epsilon/collocation points or lower the frequency.",
+            UserWarning,
+        )
+
+
+def _residual_below_tolerance(eps_residual, residual_tol):
+    if residual_tol is None:
+        return False
+    return float(np.asarray(eps_residual)) <= residual_tol
 
 
 def _restore_train_checkpoint(
@@ -575,11 +797,14 @@ def _train(  # noqa: C901
     learning_rate,
     adaptive_sampler=None,
     adaptive_sample_freq=1000,
+    adaptive_sample_accumulate=False,
+    max_adaptive_samples=None,
     # progress & reproducibility params
     return_loss_history=True,
     print_every=100,
     checkpoint_path=None,
     checkpoint_every=5000,
+    resume=False,
     callback=None,
     callback_every=1000,
     key=None,
@@ -608,6 +833,11 @@ def _train(  # noqa: C901
         Function to generate new collocation points.
     adaptive_sample_freq : int, optional
         Frequency of resampling collocation points.
+    adaptive_sample_accumulate : bool, optional
+        If True, append new adaptive collocation points to the previous set.
+        If False, replace the previous adaptive set. Default is False.
+    max_adaptive_samples : int, optional
+        Maximum number of accumulated adaptive samples per coordinate.
     return_loss_history : bool, optional
         If True, returns the loss history alongside the model.
     print_every : int, optional
@@ -616,6 +846,9 @@ def _train(  # noqa: C901
         Path for saving/restoring checkpoints.
     checkpoint_every : int, optional
         Frequency of checkpoints.
+    resume : bool, optional
+        If True, resume from an existing checkpoint at ``checkpoint_path``.
+        Default is False to avoid silently reusing stale experiments.
     callback : callable, optional
         Function called every ``callback_every`` steps
         with signature ``callback(net,step)``.
@@ -654,8 +887,9 @@ def _train(  # noqa: C901
     if checkpoint_path and checkpoint_every > 0:
         manager = checkpoint_manager(checkpoint_path)
 
-        if manager.latest_step() is not None:
-            start_step = manager.latest_step()
+        latest_step = manager.latest_step()
+        if latest_step is not None and resume:
+            start_step = latest_step
             print(f"\n=== Resuming training from step {start_step} ===")
             restored, loss_ref_restored = _restore_train_checkpoint(
                 manager,
@@ -677,6 +911,12 @@ def _train(  # noqa: C901
                 loss_history = list(loss_history)
 
             start_step += 1
+        elif latest_step is not None:
+            warnings.warn(
+                f"Existing checkpoint at {checkpoint_path!r} was not restored "
+                "because resume=False.",
+                UserWarning,
+            )
 
     if debug:
         print("\n-----   Static  -----")
@@ -733,7 +973,13 @@ def _train(  # noqa: C901
         and (start_step < steps)
     ):
         print(f"Resampled at step {start_step}.")
-        x_col, key = adaptive_sampler(eqx.combine(trainable, frozen, static), key=key)
+        x_new, key = adaptive_sampler(eqx.combine(trainable, frozen, static), key=key)
+        x_col = _merge_adaptive_samples(
+            x_col,
+            x_new,
+            accumulate=adaptive_sample_accumulate,
+            max_samples=max_adaptive_samples,
+        )
 
     if not normalize_loss:
         loss_ref = jnp.asarray(1.0)
@@ -753,8 +999,14 @@ def _train(  # noqa: C901
             and (step % adaptive_sample_freq == 0)
         ):
             print(f"Resampled at step {step}.")
-            x_col, key = adaptive_sampler(
+            x_new, key = adaptive_sampler(
                 eqx.combine(trainable, frozen, static), key=key
+            )
+            x_col = _merge_adaptive_samples(
+                x_col,
+                x_new,
+                accumulate=adaptive_sample_accumulate,
+                max_samples=max_adaptive_samples,
             )
 
         trainable, opt_state, loss_value = make_step(
@@ -827,9 +1079,12 @@ def _trust_region_train(  # noqa: C901
     linear_solver,
     adaptive_sampler=None,
     adaptive_sample_freq=100,
+    adaptive_sample_accumulate=False,
+    max_adaptive_samples=None,
     # progress & reproducibility params
     checkpoint_path=None,
     checkpoint_every=100,
+    resume=False,
     callback=None,
     callback_every=100,
     key=None,
@@ -859,10 +1114,18 @@ def _trust_region_train(  # noqa: C901
         Function to generate new collocation points.
     adaptive_sample_freq : int, optional
         Frequency of resampling collocation points.
+    adaptive_sample_accumulate : bool, optional
+        If True, append new adaptive collocation points to the previous set.
+        If False, replace the previous adaptive set. Default is False.
+    max_adaptive_samples : int, optional
+        Maximum number of accumulated adaptive samples per coordinate.
     checkpoint_path : str, optional
         Path for saving/restoring checkpoints.
     checkpoint_every : int, optional
         Frequency of checkpoints.
+    resume : bool, optional
+        If True, resume from an existing checkpoint at ``checkpoint_path``.
+        Default is False to avoid silently reusing stale experiments.
     callback : callable, optional
         Function called every ``callback_every`` steps
         with signature ``callback(net,step)``.
@@ -895,8 +1158,9 @@ def _trust_region_train(  # noqa: C901
     if checkpoint_path and checkpoint_every > 0:
         manager = checkpoint_manager(checkpoint_path)
 
-        if manager.latest_step() is not None:
-            start_step = manager.latest_step()
+        latest_step = manager.latest_step()
+        if latest_step is not None and resume:
+            start_step = latest_step
             print(f"\n=== Resuming training from step {start_step} ===")
             restored, loss_ref_restored = _restore_trust_region_checkpoint(
                 manager, start_step, trainable, loss_ref
@@ -904,6 +1168,12 @@ def _trust_region_train(  # noqa: C901
             trainable = restored["trainable"]
             loss_ref = restored.get("loss_ref", loss_ref)
             net = eqx.combine(trainable, frozen, static)
+        elif latest_step is not None:
+            warnings.warn(
+                f"Existing checkpoint at {checkpoint_path!r} was not restored "
+                "because resume=False.",
+                UserWarning,
+            )
 
     def raw_loss(trainable, args):
         frozen, static, *rest = args
@@ -949,8 +1219,14 @@ def _trust_region_train(  # noqa: C901
             )
         ):
             print(f"Resampled at step {step}.")
-            x_col, key = adaptive_sampler(
+            x_new, key = adaptive_sampler(
                 eqx.combine(trainable, frozen, static), key=key
+            )
+            x_col = _merge_adaptive_samples(
+                x_col,
+                x_new,
+                accumulate=adaptive_sample_accumulate,
+                max_samples=max_adaptive_samples,
             )
 
         if not normalize_loss:
@@ -1041,19 +1317,31 @@ def multistage_train(
     beta_fun=None,
     heuristic=0.9,
     frequency_estimator="spectral",
+    residual_tol=0.0,
+    frequency_samples_per_mode=6.0,
     chebyshev=False,
     feature_map="separable",
     stage_correction_param_map=None,
     x_stage2=None,
     training_samples_stage2=None,
+    loss_components_fun_s1=None,
+    loss_components_fun_s2=None,
+    gamma_s1=0.5,
+    gamma_s2=0.5,
+    gamma_g_s1=None,
+    gamma_g_s2=None,
+    gamma_g_eps=1e-12,
+    adaptive_sample_accumulate=False,
+    max_adaptive_samples=None,
     # progress & reproducibility params
     return_loss_history=True,
     print_every=100,
     key=None,
     net_kwargs_for_save=None,
     name="",
-    checkpoint_dir="checkpoints",
+    checkpoint_dir=None,
     checkpoint_every=5000,
+    resume=False,
     benchmark_state=None,
     normalize_loss=True,
     **adaptive_sample_kwargs,
@@ -1110,6 +1398,12 @@ def multistage_train(
         Used only when ``frequency_estimator="zero_crossing"``.
     frequency_estimator : {"spectral", "zero_crossing"}
         Fourier residual frequency estimator used between stages.
+    residual_tol : float or None
+        Stop adding stages when the RMS residual estimate is at or below this
+        tolerance. Set to None to disable this safeguard.
+    frequency_samples_per_mode : float or None
+        Warn when the estimated Fourier/Chebyshev mode exceeds the available
+        statistics samples divided by this value. Set to None to disable.
     chebyshev : bool
         Whether to use Chebyshev feature mapping instead of Fourier.
         If given, ``heuristic`` is ignored.
@@ -1125,6 +1419,22 @@ def multistage_train(
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
         Training data for stage 2 and beyond. Default is ``training_samples``.
+    loss_components_fun_s1, loss_components_fun_s2 : callable, optional
+        Component loss functions returning data/equation/(optional) gradient
+        losses. When supplied, they are wrapped using ``gamma`` and ``gamma_g``.
+    gamma_s1, gamma_s2 : float, optional
+        Equation-loss weights used with component loss functions.
+    gamma_g_s1, gamma_g_s2 : float, optional
+        Residual-gradient weights used with component loss functions. If None
+        and a gradient component is returned, the weight is estimated from
+        residual and residual-gradient magnitudes.
+    gamma_g_eps : float, optional
+        Numerical floor for automatic ``gamma_g`` estimates.
+    adaptive_sample_accumulate : bool, optional
+        If True, adaptive collocation points accumulate instead of replacing
+        the previous adaptive set.
+    max_adaptive_samples : int, optional
+        Maximum number of accumulated adaptive samples per coordinate.
     return_loss_history : bool, optional
         If True, returns loss histories for all stages.
     print_every : int, optional
@@ -1136,9 +1446,13 @@ def multistage_train(
     name : str, optional
         Base name for saving models and checkpoints.
     checkpoint_dir : str, optional
-        Directory to store stage-specific checkpoints.
+        Directory to store stage-specific checkpoints. Default is None, which
+        disables checkpointing unless explicitly requested.
     checkpoint_every : int, optional
         Frequency of checkpointing within stages.
+    resume : bool, optional
+        If True, resume each stage from an existing checkpoint. Default is
+        False to avoid silently reusing stale experiments.
     benchmark_state : callable, optional
         Callback for external benchmarking or logging. Signature:
         ``benchmark_state(net,stage,name,step=step)``.
@@ -1162,6 +1476,20 @@ def multistage_train(
         x_stage2 = x
     if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
+    if loss_components_fun_s1 is not None:
+        loss_fun_s1 = make_weighted_pde_loss(
+            loss_components_fun_s1,
+            gamma=gamma_s1,
+            gamma_g=gamma_g_s1,
+            gamma_g_eps=gamma_g_eps,
+        )
+    if loss_components_fun_s2 is not None:
+        loss_fun_s2 = make_weighted_pde_loss(
+            loss_components_fun_s2,
+            gamma=gamma_s2,
+            gamma_g=gamma_g_s2,
+            gamma_g_eps=gamma_g_eps,
+        )
 
     adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
@@ -1200,10 +1528,15 @@ def multistage_train(
             learning_rate=learning_rate,
             adaptive_sampler=adaptive_sampler,
             adaptive_sample_freq=adaptive_sample_freq,
+            adaptive_sample_accumulate=adaptive_sample_accumulate,
+            max_adaptive_samples=max_adaptive_samples,
             return_loss_history=return_loss_history,
             print_every=print_every,
-            checkpoint_path=os.path.join(checkpoint_dir, f"{name}_stage_{stage}"),
+            checkpoint_path=_checkpoint_stage_path(
+                checkpoint_dir, f"{name}_stage_{stage}"
+            ),
             checkpoint_every=checkpoint_every,
+            resume=resume,
             callback=current_callback,
             key=train_key,
             normalize_loss=normalize_loss,
@@ -1241,6 +1574,22 @@ def multistage_train(
         print(f"RMS residual estimate used for stage {stage +1} is {eps_residual}.")
         print(f"RMS prediction residual used for stage {stage +1} is {eps_prediction}.")
         print(f"Estimate frequency kappa used for stage {stage +1} is {kappa}.")
+
+        if _residual_below_tolerance(eps_residual, residual_tol):
+            print(
+                f"Stopping after stage {stage}: RMS residual {eps_residual} "
+                f"is at or below residual_tol={residual_tol}."
+            )
+            break
+
+        stats_num_samples = _expanded_num_samples(num_samples_for_epsilon, net.in_size)
+        _warn_if_frequency_underresolved(
+            kappa,
+            stats_num_samples,
+            frequency_samples_per_mode,
+            stage,
+            chebyshev=chebyshev,
+        )
 
         params = _stage_correction_params_or_none(
             getattr(net, "_params", None), stage_correction_param_map
@@ -1298,18 +1647,30 @@ def multistage_trust_region_train(
     beta_fun=None,
     heuristic=0.9,
     frequency_estimator="spectral",
+    residual_tol=0.0,
+    frequency_samples_per_mode=6.0,
     chebyshev=False,
     feature_map="separable",
     stage_correction_param_map=None,
     x_stage2=None,
     training_samples_stage2=None,
+    loss_components_fun_s1=None,
+    loss_components_fun_s2=None,
+    gamma_s1=0.5,
+    gamma_s2=0.5,
+    gamma_g_s1=None,
+    gamma_g_s2=None,
+    gamma_g_eps=1e-12,
+    adaptive_sample_accumulate=False,
+    max_adaptive_samples=None,
     # Progress & reproducibility params
     print_every=100,
     key=None,
     net_kwargs_for_save=None,
     name="",
-    checkpoint_dir="checkpoints",
+    checkpoint_dir=None,
     checkpoint_every=100,
+    resume=False,
     benchmark_state=None,
     normalize_loss=True,
     **adaptive_sample_kwargs,
@@ -1389,6 +1750,12 @@ def multistage_trust_region_train(
         Used only when ``frequency_estimator="zero_crossing"``.
     frequency_estimator : {"spectral", "zero_crossing"}
         Fourier residual frequency estimator used between stages.
+    residual_tol : float or None
+        Stop adding stages when the RMS residual estimate is at or below this
+        tolerance. Set to None to disable this safeguard.
+    frequency_samples_per_mode : float or None
+        Warn when the estimated Fourier/Chebyshev mode exceeds the available
+        statistics samples divided by this value. Set to None to disable.
     chebyshev : bool
         Whether to use Chebyshev feature mapping instead of Fourier.
         If given, ``heuristic`` is ignored.
@@ -1404,6 +1771,23 @@ def multistage_trust_region_train(
         Input coordinates for stage 2 and beyond. Default is ``x``.
     training_samples_stage2 : jax.Array, optional
         Training data for stage 2 and beyond. Default is ``training_samples``.
+    loss_components_fun_s1, loss_components_fun_s2 : callable, optional
+        Component loss functions returning data/equation/(optional) gradient
+        losses. When supplied, they are wrapped using ``gamma`` and ``gamma_g``
+        for the LBFGS warmup scalar objective.
+    gamma_s1, gamma_s2 : float, optional
+        Equation-loss weights used with component loss functions.
+    gamma_g_s1, gamma_g_s2 : float, optional
+        Residual-gradient weights used with component loss functions. If None
+        and a gradient component is returned, the weight is estimated from
+        residual and residual-gradient magnitudes.
+    gamma_g_eps : float, optional
+        Numerical floor for automatic ``gamma_g`` estimates.
+    adaptive_sample_accumulate : bool, optional
+        If True, adaptive collocation points accumulate instead of replacing
+        the previous adaptive set.
+    max_adaptive_samples : int, optional
+        Maximum number of accumulated adaptive samples per coordinate.
     print_every : int, optional
         Logging frequency.
     key : jax.random.PRNGKey, optional
@@ -1413,10 +1797,14 @@ def multistage_trust_region_train(
     name : str, optional
         Base name for saving models and checkpoints.
     checkpoint_dir : str, optional
-        Directory to store stage-specific checkpoints.
+        Directory to store stage-specific checkpoints. Default is None, which
+        disables checkpointing unless explicitly requested.
     checkpoint_every : int, optional
         Frequency of checkpointing within stages. Default is 100.
         LBFGS warmup steps will checkpoint with 10 times less frequency.
+    resume : bool, optional
+        If True, resume each stage from an existing checkpoint. Default is
+        False to avoid silently reusing stale experiments.
     benchmark_state : callable, optional
         Callback for external benchmarking or logging. Signature:
         ``benchmark_state(net,stage,name,step=step)``.
@@ -1437,6 +1825,20 @@ def multistage_trust_region_train(
         x_stage2 = x
     if training_samples_stage2 is None:
         training_samples_stage2 = training_samples
+    if loss_components_fun_s1 is not None:
+        loss_fun_s1 = make_weighted_pde_loss(
+            loss_components_fun_s1,
+            gamma=gamma_s1,
+            gamma_g=gamma_g_s1,
+            gamma_g_eps=gamma_g_eps,
+        )
+    if loss_components_fun_s2 is not None:
+        loss_fun_s2 = make_weighted_pde_loss(
+            loss_components_fun_s2,
+            gamma=gamma_s2,
+            gamma_g=gamma_g_s2,
+            gamma_g_eps=gamma_g_eps,
+        )
 
     adaptive_sample_kwargs_base = dict(adaptive_sample_kwargs)
 
@@ -1476,12 +1878,15 @@ def multistage_trust_region_train(
             learning_rate=learning_rate,
             adaptive_sampler=adaptive_sampler,
             adaptive_sample_freq=adaptive_sample_freq * 10,
+            adaptive_sample_accumulate=adaptive_sample_accumulate,
+            max_adaptive_samples=max_adaptive_samples,
             return_loss_history=True,
             print_every=print_every,
-            checkpoint_path=os.path.join(
+            checkpoint_path=_checkpoint_stage_path(
                 checkpoint_dir, f"{name}_lbfgs_warmup_stage_{stage}"
             ),
             checkpoint_every=checkpoint_every * 10,
+            resume=resume,
             callback=current_callback,
             key=train_key,
             normalize_loss=normalize_loss,
@@ -1499,8 +1904,13 @@ def multistage_trust_region_train(
             linear_solver=linear_solver,
             adaptive_sampler=adaptive_sampler,
             adaptive_sample_freq=adaptive_sample_freq,
-            checkpoint_path=os.path.join(checkpoint_dir, f"{name}_stage_{stage}"),
+            adaptive_sample_accumulate=adaptive_sample_accumulate,
+            max_adaptive_samples=max_adaptive_samples,
+            checkpoint_path=_checkpoint_stage_path(
+                checkpoint_dir, f"{name}_stage_{stage}"
+            ),
             checkpoint_every=checkpoint_every,
+            resume=resume,
             callback=current_callback,
             key=train_key,
             normalize_loss=normalize_loss,
@@ -1540,6 +1950,22 @@ def multistage_trust_region_train(
         print(f"RMS residual estimate used for stage {stage +1} is {eps_residual}.")
         print(f"RMS prediction residual used for stage {stage +1} is {eps_prediction}.")
         print(f"Estimate frequency kappa used for stage {stage +1} is {kappa}.")
+
+        if _residual_below_tolerance(eps_residual, residual_tol):
+            print(
+                f"Stopping after stage {stage}: RMS residual {eps_residual} "
+                f"is at or below residual_tol={residual_tol}."
+            )
+            break
+
+        stats_num_samples = _expanded_num_samples(num_samples_for_epsilon, net.in_size)
+        _warn_if_frequency_underresolved(
+            kappa,
+            stats_num_samples,
+            frequency_samples_per_mode,
+            stage,
+            chebyshev=chebyshev,
+        )
 
         params = _stage_correction_params_or_none(
             getattr(net, "_params", None), stage_correction_param_map
